@@ -17,6 +17,7 @@ class FlightLeg(BaseModel):
     aircraft: str = Field(description="Aircraft model, e.g., Boeing 787, A320neo")
     stops: int = Field(description="Number of layovers/stops")
     price_inr: float = Field(description="Total ticket price in INR")
+    booking_url: str = Field(description="Pre-filled 1-click booking link")
 
 
 class FlightSearchOutput(BaseModel):
@@ -118,7 +119,8 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
                         duration_minutes=duration,
                         aircraft=aircraft,
                         stops=num_stops,
-                        price_inr=fare
+                        price_inr=fare,
+                        booking_url=booking_link
                     )
                 )
             except Exception:
