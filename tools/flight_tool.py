@@ -5,6 +5,9 @@ from pydantic import BaseModel, Field
 from fast_flights import FlightQuery, Passengers, create_query, get_flights
 
 
+from utils.deep_links import DeepLinkGenerator
+
+
 # ==========================================
 # 1. Output Data Contracts (Pydantic Schemas)
 # ==========================================
@@ -62,6 +65,9 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
         origin = origin_iata.strip().upper()
         dest = destination_iata.strip().upper()
         
+        # Deep Link generate karein
+        booking_link = DeepLinkGenerator.get_flight_link(origin, dest, travel_date)
+        
         # 1. Build Query Object
         query = create_query(
             flights=[
@@ -88,7 +94,7 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
         parsed_list: List[FlightLeg] = []
         prices: List[float] = []
 
-        # 3. Parse and prioritize top 6 flights to optimize LLM context window
+        # 3. Parse and prioritize top flights
         for item in raw_results:
             try:
                 first_leg = item.flights[0] if (hasattr(item, "flights") and item.flights) else None
