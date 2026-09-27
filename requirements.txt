@@ -1,0 +1,39 @@
+# --- Core Orchestration & LLM Providers ---
+langgraph>=1.0.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-groq>=0.2.0
+
+# --- Model Context Protocol (MCP) ---
+mcp>=1.2.0
+
+# --- State Persistence & Checkpointing (Neon PostgreSQL) ---
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary]>=3.2.0
+psycopg-pool>=3.2.0
+
+# --- Async Networking & Ingress ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.28.0
+requests>=2.32.0
+
+# --- Multi-Modal Transit (Flights, Rail, Bus) & Geospatial ---
+amadeus>=11.0.0
+airportsdata>=20241001
+pycountry>=24.6.1
+geopy>=2.4.1
+python-dateutil>=2.9.0
+
+# --- Search & Tooling ---
+tavily-python>=0.5.0
+
+# --- Data Validation & Configuration ---
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+jinja2>=3.1.4
+python-dotenv>=1.0.1
+
+# --- Production Observability (80 LPA Standard) ---
+langsmith>=0.2.0
