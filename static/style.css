@@ -1,7 +1,10 @@
-/* Minimalist TheAdaply Monochrome Palette */
+/* ═══════════════════════════════════════════════════════════════
+   Tessera — Light Monochrome (TheAdaply style)
+   White bg + dark text + faded moon/space backdrop
+   ═══════════════════════════════════════════════════════════════ */
 :root {
   --bg-color: #f7f7f8;
-  --surface-color: #ffffff;
+  --surface-color: rgba(255, 255, 255, 0.75);
   --surface-border: #e6e6e8;
   --surface-hover: #f1f1f3;
   --text-primary: #111215;
@@ -10,6 +13,8 @@
   --accent-black: #0a0a0b;
   --accent-green: #10b981;
   --accent-green-bg: #ecfdf5;
+  --accent-indigo: #6366f1;
+  --accent-indigo-soft: rgba(99, 102, 241, 0.06);
   --radius-pill: 9999px;
   --radius-card: 16px;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -22,16 +27,63 @@
   padding: 0;
 }
 
+html, body {
+  min-height: 100vh;
+}
+
 body {
-  background-color: var(--bg-color);
   color: var(--text-primary);
   font-family: var(--font-sans);
   line-height: 1.5;
   padding-bottom: 80px;
   -webkit-font-smoothing: antialiased;
+  position: relative;
+  overflow-x: hidden;
+  background-color: #f7f7f8;
 }
 
-/* Floating Pill Navbar */
+/* ── Layer 1: Grayscale moon image, faded ── */
+html::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-image: url('/static/moon-bg.jpg');
+  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
+  filter: grayscale(1) brightness(1.4) contrast(0.85) saturate(0);
+  -webkit-filter: grayscale(1) brightness(1.4) contrast(0.85) saturate(0);
+  opacity: 0.55;
+}
+
+/* ── Layer 2: White overlay for light theme ── */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(247, 247, 248, 0.65) 0%,
+    rgba(247, 247, 248, 0.75) 30%,
+    rgba(247, 247, 248, 0.65) 70%,
+    rgba(247, 247, 248, 0.85) 100%
+  );
+}
+
+/* Content on top */
+.navbar-wrapper,
+.container {
+  position: relative;
+  z-index: 10;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FLOATING PILL NAVBAR
+   ═══════════════════════════════════════════════════════════════ */
 .navbar-wrapper {
   position: sticky;
   top: 18px;
@@ -48,11 +100,12 @@ body {
   width: 100%;
   max-width: 860px;
   background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-pill);
   padding: 8px 18px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.04);
 }
 
 .brand {
@@ -62,10 +115,12 @@ body {
   font-weight: 600;
   font-size: 14px;
   letter-spacing: -0.01em;
+  color: var(--text-primary);
 }
 
 .brand-icon {
   font-size: 13px;
+  color: var(--text-primary);
 }
 
 .nav-links {
@@ -94,14 +149,18 @@ body {
   color: var(--text-secondary);
 }
 
-/* Container */
+/* ═══════════════════════════════════════════════════════════════
+   CONTAINER
+   ═══════════════════════════════════════════════════════════════ */
 .container {
   max-width: 860px;
   margin: 0 auto;
   padding: 60px 16px 0;
 }
 
-/* Hero */
+/* ═══════════════════════════════════════════════════════════════
+   HERO
+   ═══════════════════════════════════════════════════════════════ */
 .hero-section {
   text-align: center;
   margin-bottom: 36px;
@@ -132,13 +191,17 @@ body {
   margin: 0 auto;
 }
 
-/* Input Card */
+/* ═══════════════════════════════════════════════════════════════
+   INPUT CARD
+   ═══════════════════════════════════════════════════════════════ */
 .input-card {
-  background: var(--surface-color);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   padding: 16px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
   margin-bottom: 24px;
 }
 
@@ -146,7 +209,7 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 12px;
-  background: var(--bg-color);
+  background: rgba(247, 247, 248, 0.8);
   border: 1px solid var(--surface-border);
   border-radius: 12px;
   padding: 12px;
@@ -169,6 +232,10 @@ textarea {
   outline: none;
 }
 
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
 .pill-submit-btn {
   background: var(--accent-black);
   color: #fff;
@@ -189,7 +256,14 @@ textarea {
   opacity: 0.88;
 }
 
-/* Quick Suggestion Pills */
+.pill-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SUGGESTION PILLS
+   ═══════════════════════════════════════════════════════════════ */
 .suggestion-pills {
   display: flex;
   align-items: center;
@@ -219,13 +293,18 @@ textarea {
   color: var(--text-primary);
 }
 
-/* Pipeline Status */
+/* ═══════════════════════════════════════════════════════════════
+   PIPELINE
+   ═══════════════════════════════════════════════════════════════ */
 .pipeline-section {
-  background: var(--surface-color);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   padding: 14px 18px;
   margin-bottom: 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
 }
 
 .pipeline-header {
@@ -282,9 +361,13 @@ textarea {
   font-size: 12px;
 }
 
-/* Results Display */
+/* ═══════════════════════════════════════════════════════════════
+   RESULTS — OVERVIEW
+   ═══════════════════════════════════════════════════════════════ */
 .overview-card {
-  background: var(--surface-color);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   padding: 22px;
@@ -292,12 +375,14 @@ textarea {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 18px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
 }
 
 .summary-title {
   font-size: 24px;
   font-weight: 500;
   letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
 .summary-sub {
@@ -314,8 +399,12 @@ textarea {
   font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   RESULTS GRID
+   ═══════════════════════════════════════════════════════════════ */
 .results-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -330,10 +419,13 @@ textarea {
 }
 
 .sub-card {
-  background: var(--surface-color);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   padding: 18px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
 }
 
 .sub-card.full-width {
@@ -350,6 +442,7 @@ textarea {
 .card-head h3 {
   font-size: 15px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 
 .badge-tag {
@@ -361,7 +454,9 @@ textarea {
   color: var(--text-secondary);
 }
 
-/* Item Cards inside lists */
+/* ═══════════════════════════════════════════════════════════════
+   ITEM CARDS
+   ═══════════════════════════════════════════════════════════════ */
 .item-card {
   border: 1px solid var(--surface-border);
   border-radius: 10px;
@@ -376,6 +471,7 @@ textarea {
 .item-info h5 {
   font-size: 13px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 
 .item-info p {
@@ -391,6 +487,7 @@ textarea {
   font-size: 13px;
   font-weight: 600;
   display: block;
+  color: var(--text-primary);
 }
 
 .book-link {
@@ -400,46 +497,119 @@ textarea {
   text-decoration: underline;
 }
 
-/* Itinerary Grid */
+/* ═══════════════════════════════════════════════════════════════
+   ITINERARY GRID
+   ═══════════════════════════════════════════════════════════════ */
 .itinerary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 14px;
 }
 
 .day-box {
   background: var(--bg-color);
   border: 1px solid var(--surface-border);
   border-radius: 10px;
-  padding: 12px;
+  padding: 16px 18px;
 }
 
 .day-box h6 {
   font-size: 12px;
   font-family: var(--font-mono);
-  color: var(--text-secondary);
-  margin-bottom: 6px;
+  color: var(--accent-indigo);
+  margin-bottom: 10px;
+  letter-spacing: 0.05em;
+  font-weight: 600;
 }
 
-.day-box p {
-  font-size: 13px;
+/* ═══════════════════════════════════════════════════════════════
+   MARKDOWN BODY (rendered inside .day-box)
+   ═══════════════════════════════════════════════════════════════ */
+.day-content,
+.md-body {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  line-height: 1.7;
+}
+
+.md-body p {
+  margin: 6px 0;
+}
+
+.md-body strong {
+  color: var(--accent-indigo);
+  font-weight: 600;
+}
+
+.md-body em {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.md-h {
+  font-size: 14px;
+  color: var(--accent-indigo);
+  margin: 14px 0 8px;
+  font-weight: 600;
+}
+
+.md-ul {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.md-ul li {
+  margin: 5px 0;
   color: var(--text-primary);
 }
 
-/* HITL Action Bar */
+.md-tip {
+  display: block;
+  padding: 8px 12px;
+  background: var(--accent-indigo-soft);
+  border-left: 3px solid var(--accent-indigo);
+  border-radius: 6px;
+  margin: 10px 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.md-hr {
+  border: none;
+  border-top: 1px solid var(--surface-border);
+  margin: 14px 0;
+}
+
+.md-link {
+  color: var(--accent-indigo);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.md-link:hover {
+  color: #4f46e5;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   HITL ACTION BAR
+   ═══════════════════════════════════════════════════════════════ */
 .hitl-card {
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   padding: 18px 22px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
 }
 
 .hitl-card h4 {
   font-size: 14px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 
 .hitl-card p {
@@ -460,6 +630,12 @@ textarea {
   padding: 8px 18px;
   font-size: 13px;
   cursor: pointer;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+.primary-btn:hover {
+  opacity: 0.88;
 }
 
 .secondary-btn {
@@ -470,6 +646,11 @@ textarea {
   padding: 8px 16px;
   font-size: 13px;
   cursor: pointer;
+  transition: background 0.15s;
+}
+
+.secondary-btn:hover {
+  background: var(--surface-hover);
 }
 
 .hidden {

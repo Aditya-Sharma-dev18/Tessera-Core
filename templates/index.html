@@ -7,11 +7,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
-  <!-- Floating Pill Header (TheAdaply Style) -->
+  <!-- Floating Pill Header -->
   <header class="navbar-wrapper">
     <nav class="pill-nav">
       <div class="brand">
@@ -51,7 +51,6 @@
         </button>
       </div>
 
-      <!-- Quick Suggestion Pills -->
       <div class="suggestion-pills">
         <span class="pill-label">Try:</span>
         <button class="sample-query" data-query="Plan a 4-day trip from Delhi to Goa next month under 30k">Delhi → Goa (4 Days)</button>
@@ -60,7 +59,7 @@
       </div>
     </section>
 
-    <!-- Real-time Agent Progress Stepper -->
+    <!-- Pipeline -->
     <section id="agentPipeline" class="pipeline-section hidden">
       <div class="pipeline-header">
         <span class="mono-label">EXECUTION PIPELINE</span>
@@ -77,9 +76,8 @@
       </div>
     </section>
 
-    <!-- Results Display -->
+    <!-- Results -->
     <section id="resultsSection" class="results-section hidden">
-      <!-- Overview Card -->
       <div class="overview-card">
         <div>
           <span class="mono-label">TRIP SUMMARY</span>
@@ -92,9 +90,7 @@
         </div>
       </div>
 
-      <!-- Grid: Flights & Stays -->
       <div class="results-grid">
-        <!-- Transit Box -->
         <div class="sub-card">
           <div class="card-head">
             <h3>Transit Options (FastMCP)</h3>
@@ -103,7 +99,6 @@
           <div id="transitOptionsList" class="item-list"></div>
         </div>
 
-        <!-- Stay Box -->
         <div class="sub-card">
           <div class="card-head">
             <h3>Curated Stays</h3>
@@ -113,7 +108,6 @@
         </div>
       </div>
 
-      <!-- Itinerary Section -->
       <div class="sub-card full-width">
         <div class="card-head">
           <h3>Day-Wise Itinerary Plan</h3>
@@ -122,7 +116,6 @@
         <div id="itineraryDaysList" class="itinerary-grid"></div>
       </div>
 
-      <!-- Human-In-The-Loop Approval Box -->
       <div class="hitl-card">
         <div>
           <h4>Human-in-the-Loop Review</h4>
@@ -136,6 +129,6 @@
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <script src="/static/script.js"></script>
 </body>
 </html>

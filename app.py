@@ -1,51 +1,57 @@
 # ═══════════════════════════════════════════════════════════════════════════
-#  🚀  TESSERA TRAVEL ENGINE — FastAPI Backend
+#  🔧  WINDOWS EVENT LOOP FIX — MUST BE FIRST
 # ═══════════════════════════════════════════════════════════════════════════
-#  Endpoints:
-#    GET  /                          → serve index.html
-#    POST /api/plan                  → start a new trip planning session
-#    POST /api/plan/{thread_id}/approve  → HITL approve
-#    POST /api/plan/{thread_id}/reject   → HITL reject with feedback
-#    GET  /api/plan/{thread_id}/status   → poll current state
-# ═══════════════════════════════════════════════════════════════════════════
+import sys
+import asyncio
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    print("🔧 Windows SelectorEventLoop policy set")
 
 import os
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  📦  IMPORTS
+# ═══════════════════════════════════════════════════════════════════════════
 import uuid
-import json
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-
 from langgraph.types import Command
-
-# Import your existing graph builder
-from backend import build_graph, _pool   # ← adjust if module name differs
 
 load_dotenv()
 
+# Local imports
+from backend import build_graph, _pool
 
-# ───────────────────────────────────────────────────────────────────────────
-#  📋  REQUEST / RESPONSE SCHEMAS
-# ───────────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  📋  SCHEMAS
+# ═══════════════════════════════════════════════════════════════════════════
 class PlanRequest(BaseModel):
-    query: str = Field(..., min_length=5, description="Natural language travel query")
+    query: str = Field(..., min_length=5)
 
 
 class ApprovalRequest(BaseModel):
-    decision: str = Field(..., description="approve | reject | feedback")
-    feedback: Optional[str] = Field("", description="Optional feedback for revisions")
+    decision: str
+    feedback: Optional[str] = ""
 
 
 class PlanResponse(BaseModel):
     thread_id: str
-    status: str                      # "awaiting_approval" | "completed" | "blocked" | "error"
+    status: str
     message: Optional[str] = None
     approval_request: Optional[str] = None
     trip_constraints: Optional[Dict[str, Any]] = None
@@ -61,9 +67,9 @@ class PlanResponse(BaseModel):
     approved: Optional[str] = None
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  🔄  LIFESPAN — graph build once at startup
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  🔄  LIFESPAN
+# ═══════════════════════════════════════════════════════════════════════════
 graph = None
 
 
@@ -71,20 +77,27 @@ graph = None
 async def lifespan(app: FastAPI):
     global graph
     print("🚀 Starting Tessera Travel Engine...")
-    graph = build_graph()
-    print("✅ Graph compiled with Postgres checkpointer")
+
+    # 1. Pool open
+    await _pool.open()
+
+    # 2. Build graph (async — checkpointer setup inside build_graph)
+    graph = await build_graph()
+    print("✅ Graph compiled with Async Postgres checkpointer")
+
     yield
-    # Cleanup
+
+    # Shutdown
     try:
-        _pool.close()
+        await _pool.close()
         print("🔒 Postgres pool closed")
     except Exception as e:
         print(f"⚠️  Pool close warning: {e}")
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ⚡  FASTAPI APP
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  ⚡  APP
+# ═══════════════════════════════════════════════════════════════════════════
 app = FastAPI(
     title="Tessera Travel Engine",
     description="Multi-Agent Trip Planner with HITL",
@@ -94,27 +107,26 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],       # tighten in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Static + templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  🏠  ROOT — Serve frontend
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  🏠  ROOT
+# ═══════════════════════════════════════════════════════════════════════════
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  🧠  HELPER — Build initial state
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  🧠  HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
 def build_initial_state(user_query: str) -> Dict[str, Any]:
     return {
         "user_query": user_query,
@@ -139,7 +151,6 @@ def build_initial_state(user_query: str) -> Dict[str, Any]:
 
 
 def extract_interrupt(snapshot) -> Optional[Dict[str, Any]]:
-    """Safely extract interrupt payload from a graph snapshot."""
     if not snapshot or not getattr(snapshot, "interrupts", None):
         return None
     first = snapshot.interrupts[0]
@@ -147,15 +158,14 @@ def extract_interrupt(snapshot) -> Optional[Dict[str, Any]]:
 
 
 def serialize_state(values: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip non-serializable objects (messages) from state."""
-    safe = dict(values)
-    safe.pop("messages", None)   # AIMessage objects aren't JSON-serializable
+    safe = dict(values or {})
+    safe.pop("messages", None)
     return safe
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  🎯  POST /api/plan — Start new plan
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  🎯  POST /api/plan
+# ═══════════════════════════════════════════════════════════════════════════
 @app.post("/api/plan", response_model=PlanResponse)
 async def start_plan(req: PlanRequest):
     if graph is None:
@@ -167,7 +177,6 @@ async def start_plan(req: PlanRequest):
     try:
         initial_state = build_initial_state(req.query)
 
-        # Run graph until it hits interrupt OR finishes
         async for _ in graph.astream(initial_state, config=config):
             pass
 
@@ -180,13 +189,12 @@ async def start_plan(req: PlanRequest):
             return PlanResponse(
                 thread_id=thread_id,
                 status="blocked",
-                message=state_values.get("final_response", "Request blocked by guardrails"),
-                **{k: state_values.get(k) for k in (
-                    "guardrail_reason", "final_response"
-                ) if k in state_values}
+                message=state_values.get("final_response", "Blocked by guardrails"),
+                final_response=state_values.get("final_response"),
+                approved="rejected",
             )
 
-        # Awaiting human approval
+        # Awaiting approval
         if interrupt_payload:
             return PlanResponse(
                 thread_id=thread_id,
@@ -204,7 +212,7 @@ async def start_plan(req: PlanRequest):
                 approved="pending",
             )
 
-        # Completed (unlikely in first run, but safe)
+        # Completed
         return PlanResponse(
             thread_id=thread_id,
             status="completed",
@@ -216,13 +224,20 @@ async def start_plan(req: PlanRequest):
 
     except Exception as exc:
         import traceback
+        print("\n" + "=" * 70)
+        print("❌ ERROR IN /api/plan")
+        print("=" * 70)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Planning failed: {str(exc)}")
+        print("=" * 70 + "\n")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Planning failed: {type(exc).__name__}: {str(exc)}"
+        )
 
 
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 #  ✅  POST /api/plan/{thread_id}/approve
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 @app.post("/api/plan/{thread_id}/approve", response_model=PlanResponse)
 async def approve_plan(thread_id: str, req: ApprovalRequest):
     if graph is None:
@@ -233,7 +248,6 @@ async def approve_plan(thread_id: str, req: ApprovalRequest):
     try:
         resume_payload = {"decision": req.decision, "feedback": req.feedback or ""}
 
-        # Resume graph — it may finish OR re-interrupt (if feedback triggers revise)
         async for _ in graph.astream(Command(resume=resume_payload), config=config):
             pass
 
@@ -241,7 +255,6 @@ async def approve_plan(thread_id: str, req: ApprovalRequest):
         interrupt_payload = extract_interrupt(snapshot)
         state_values = serialize_state(snapshot.values or {})
 
-        # Re-interrupted → still awaiting approval
         if interrupt_payload:
             return PlanResponse(
                 thread_id=thread_id,
@@ -253,7 +266,6 @@ async def approve_plan(thread_id: str, req: ApprovalRequest):
                 message="Revised plan ready for review",
             )
 
-        # Final completion
         return PlanResponse(
             thread_id=thread_id,
             status="completed",
@@ -270,23 +282,29 @@ async def approve_plan(thread_id: str, req: ApprovalRequest):
 
     except Exception as exc:
         import traceback
+        print("\n" + "=" * 70)
+        print("❌ ERROR IN /api/plan/{thread_id}/approve")
+        print("=" * 70)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Approval failed: {str(exc)}")
+        print("=" * 70 + "\n")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Approval failed: {type(exc).__name__}: {str(exc)}"
+        )
 
 
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 #  ❌  POST /api/plan/{thread_id}/reject
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 @app.post("/api/plan/{thread_id}/reject", response_model=PlanResponse)
 async def reject_plan(thread_id: str, req: ApprovalRequest):
-    """Shortcut — reject is just approve with decision='reject'."""
     req.decision = "reject"
     return await approve_plan(thread_id, req)
 
 
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 #  🔍  GET /api/plan/{thread_id}/status
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 @app.get("/api/plan/{thread_id}/status", response_model=PlanResponse)
 async def plan_status(thread_id: str):
     if graph is None:
@@ -320,17 +338,41 @@ async def plan_status(thread_id: str):
         raise HTTPException(status_code=500, detail=f"Status lookup failed: {str(exc)}")
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  💚  HEALTH CHECK
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  💚  HEALTH
+# ═══════════════════════════════════════════════════════════════════════════
 @app.get("/health")
 async def health():
     return {"status": "ok", "graph_ready": graph is not None}
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ▶️  RUN
-# ───────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  ▶️  RUN — with proper Windows event loop
+# ═══════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+
+    # Force SelectorEventLoop on Windows (psycopg async requirement)
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        loop = asyncio.SelectorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
+
+    asyncio.set_event_loop(loop)
+
+    config = uvicorn.Config(
+        "app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        loop="asyncio",
+    )
+    server = uvicorn.Server(config)
+
+    try:
+        loop.run_until_complete(server.serve())
+    except KeyboardInterrupt:
+        print("\n👋 Shutting down...")
+    finally:
+        loop.close()
