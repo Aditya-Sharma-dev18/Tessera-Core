@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tessera // Travel Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Floating Pill Header (TheAdaply Style) -->
+  <header class="navbar-wrapper">
+    <nav class="pill-nav">
+      <div class="brand">
+        <span class="brand-icon">✦</span>
+        <span class="brand-name">tessera-travel</span>
+      </div>
+      <div class="nav-links">
+        <a href="#how-it-works">Architecture</a>
+        <a href="#agents">Agents</a>
+        <a href="#mcp">FastMCP Tools</a>
+      </div>
+      <button class="nav-cta" id="liveStatusBtn">Status: Ready</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <span class="hero-badge">MULTI-AGENT TRAVEL ORCHESTRATION</span>
+      <h1 class="hero-title">Plan trips with specialized<br />autonomous agents.</h1>
+      <p class="hero-subtitle">FastMCP-powered search across flights, railways, stays, and dynamic day-wise itineraries.</p>
+    </section>
+
+    <!-- Query Input Card -->
+    <section class="input-card">
+      <div class="input-box-wrapper">
+        <textarea 
+          id="userQuery" 
+          rows="2" 
+          placeholder="E.g., Plan a 4-day budget trip from Delhi to Goa for 2 people next month with flights and stays under ₹35,000..."
+        ></textarea>
+        <button id="generateBtn" class="pill-submit-btn">
+          <span>Run Agents</span>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Quick Suggestion Pills -->
+      <div class="suggestion-pills">
+        <span class="pill-label">Try:</span>
+        <button class="sample-query" data-query="Plan a 4-day trip from Delhi to Goa next month under 30k">Delhi → Goa (4 Days)</button>
+        <button class="sample-query" data-query="Find budget trains and stay from Mumbai to Manali for 5 days">Mumbai → Manali (Rail + Bus)</button>
+        <button class="sample-query" data-query="Executive 3-day trip to Dubai with direct flights from Delhi">Delhi → Dubai (3 Days)</button>
+      </div>
+    </section>
+
+    <!-- Real-time Agent Progress Stepper -->
+    <section id="agentPipeline" class="pipeline-section hidden">
+      <div class="pipeline-header">
+        <span class="mono-label">EXECUTION PIPELINE</span>
+        <span id="pipelineStatus" class="status-indicator">Routing query...</span>
+      </div>
+      <div class="pipeline-steps">
+        <div class="step-badge" id="step-guardrail">1. Input Guardrail</div>
+        <div class="step-arrow">→</div>
+        <div class="step-badge" id="step-supervisor">2. Supervisor Agent</div>
+        <div class="step-arrow">→</div>
+        <div class="step-badge" id="step-specialists">3. FastMCP Specialist Tools</div>
+        <div class="step-arrow">→</div>
+        <div class="step-badge" id="step-synthesizer">4. Final TravelState</div>
+      </div>
+    </section>
+
+    <!-- Results Display -->
+    <section id="resultsSection" class="results-section hidden">
+      <!-- Overview Card -->
+      <div class="overview-card">
+        <div>
+          <span class="mono-label">TRIP SUMMARY</span>
+          <h2 id="resDestination" class="summary-title">Delhi to Goa</h2>
+          <p id="resDuration" class="summary-sub">4 Days • 2 Travelers • Economy</p>
+        </div>
+        <div class="cost-box">
+          <span class="mono-label">ESTIMATED TOTAL</span>
+          <span id="resTotalCost" class="cost-amount">₹28,450</span>
+        </div>
+      </div>
+
+      <!-- Grid: Flights & Stays -->
+      <div class="results-grid">
+        <!-- Transit Box -->
+        <div class="sub-card">
+          <div class="card-head">
+            <h3>Transit Options (FastMCP)</h3>
+            <span class="badge-tag" id="transitTypeBadge">Flights</span>
+          </div>
+          <div id="transitOptionsList" class="item-list"></div>
+        </div>
+
+        <!-- Stay Box -->
+        <div class="sub-card">
+          <div class="card-head">
+            <h3>Curated Stays</h3>
+            <span class="badge-tag">Tavily Verified</span>
+          </div>
+          <div id="hotelOptionsList" class="item-list"></div>
+        </div>
+      </div>
+
+      <!-- Itinerary Section -->
+      <div class="sub-card full-width">
+        <div class="card-head">
+          <h3>Day-Wise Itinerary Plan</h3>
+          <span class="badge-tag">LLM Structured</span>
+        </div>
+        <div id="itineraryDaysList" class="itinerary-grid"></div>
+      </div>
+
+      <!-- Human-In-The-Loop Approval Box -->
+      <div class="hitl-card">
+        <div>
+          <h4>Human-in-the-Loop Review</h4>
+          <p>Review the generated plan. Approve or pass revisions back to supervisor.</p>
+        </div>
+        <div class="hitl-actions">
+          <button class="secondary-btn" id="rejectBtn">Modify Plan</button>
+          <button class="primary-btn" id="approveBtn">Approve & Book</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
