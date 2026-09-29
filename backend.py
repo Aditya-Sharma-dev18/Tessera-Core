@@ -11,7 +11,7 @@ from pyscopg import binary, pool
 from typing import TypedDict,Literal,Annotated,Optional,List,Any
 from psycopg.rows import dict_row
 from langgraph.graph import START,END
-
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 os.environ["SSL_CERT_FILE"]=certifi.where()   #tells the python env where to take the ca while doing ssl /https req
 os.environ["REQUESTS_CA_BUNDLE"]=certifi.where()
 from psycopg2 import ConnectionPool
@@ -51,7 +51,7 @@ iterinary_model=ChatGroq(
     model="openai/gpt-oss-120b",
     temperature=0
 )
-final_agent=ChatGroq(
+final_agent_model=ChatGroq(
     model="openai/gpt-oss-120b",
     temperature=0
 )
@@ -125,7 +125,8 @@ def guardrails_node(state:TravelState)->dict:
         "guardrail_reason": result.reason
     }
 
-
+def route_after_guardrails(state: TravelState) -> Literal["supervisor_agent", "blocked_request_node"]:
+    return "supervisor_agent" if state.get("guardrail_allowed") else "blocked_request_node"
 
 
 def blocked_request_node(state: TravelState) -> dict:
@@ -364,20 +365,254 @@ def iternary_agent(state: TravelState):
         "messages": [response]
     }
 
-def human_apporval_node(state:TravelState):
-    review=interrupt(
-        
+def human_approval_node(state: TravelState) -> dict:
+    """
+    Pauses the graph using langgraph's Interrupt primitive, presenting
+    the drafted itinerary to the human for approve / reject / edit feedback.
+    """
+    itinerary = state.get("itinerary", "")
+    budget = state.get("budget_results", "")
+    selected = state.get("selected_agents", [])
+
+    approval_request = (
+        f"📋 **Itinerary Draft Ready for Review**\n\n"
+        f"**Agents Used:** {', '.join(selected)}\n\n"
+        f"**Budget Summary:**\n{budget}\n\n"
+        f"**Draft Itinerary:**\n{itinerary}\n\n"
+        f"---\n"
+        f"✅ Reply `approve` to finalize.\n"
+        f"❌ Reply `reject` to discard.\n"
+        f"✏️ Or provide feedback (e.g., 'make it cheaper', 'add day 4') to revise."
     )
 
+    # `interrupt()` pauses graph execution and surfaces the value to the caller.
+    # On `Command(resume=...)`, that resume value is returned here.
+    human_input = interrupt({
+        "type": "approval_request",
+        "question": "Do you approve this itinerary? (approve / reject / feedback)",
+        "draft_itinerary": itinerary,
+        "draft_budget": budget,
+        "approval_request": approval_request
+    })
+
+    # Normalize the resume payload
+    if isinstance(human_input, dict):
+        decision = str(human_input.get("decision", "")).strip().lower()
+        feedback = str(human_input.get("feedback", "")).strip()
+    else:
+        decision = str(human_input).strip().lower()
+        feedback = ""
+
+    # Derive approval status
+    if decision in ("approve", "approved", "yes", "y", "ok"):
+        status = "approved"
+    elif decision in ("reject", "rejected", "no", "n"):
+        status = "rejected"
+    else:
+        status = "pending"
+        feedback = feedback or str(human_input)
+
+    return {
+        "approved": status,
+        "human_feedback": feedback,
+        "approval_request": approval_request,
+        "messages": [AIMessage(content=f"Human decision: {status}. Feedback: {feedback or 'none'}")]
+    }
+
     
+def route_after_approval(state: TravelState) -> Literal["final_agent", "revise_itinerary_node", "rejected_node"]:
+    status = state.get("approved", "pending")
+    if status == "approved":
+        return "final_agent"
+    if status == "rejected":
+        return "rejected_node"
+    return "revise_itinerary_node"
+
+def revise_itinerary_node(state: TravelState) -> dict:
+    """
+    Applies human feedback to regenerate the itinerary, then sends it
+    back for approval (loop).
+    """
+    query = state.get("user_query", "")
+    constraints = state.get("trip_constraints", {})
+    itinerary = state.get("itinerary", "")
+    feedback = state.get("human_feedback", "")
+
+    revision_prompt = f"""
+    You are the Itinerary Architect Agent. Revise the existing itinerary based on human feedback.
+
+    Original User Query: {query}
+    Trip Constraints: {constraints}
+
+    Current Draft Itinerary:
+    {itinerary}
+
+    Human Feedback to Apply:
+    {feedback}
+
+    Regenerate the full day-by-day itinerary incorporating the feedback.
+    Keep the Markdown structure (headers + bullets) and preserve all valid details.
+    """
+
+    response = iterinary_model.invoke(revision_prompt)
+    return {
+        "itinerary": response.content,
+        "approved": "pending",
+        "messages": [AIMessage(content=f"Revised itinerary per feedback: {feedback}")]
+    }
 
 
 
-workflow=StateGraph(TravelState)
-workflow.add_node("flight_agent", flight_agent)
-workflow.add_node("rail_agent", rail_agent)
-workflow.add_node("bus_agent", bus_agent)
-workflow.add_node("hotel_agent", hotel_agent)
-workflow.add_node("weather_agent", weather_agent)
-workflow.add_node("budget_agent", budget_agent)
-workflow.add_node("iternary_agent", iternary_agent)
+
+
+def rejected_node(state: TravelState) -> dict:
+    return {
+        "final_response": (
+            "❌ **Itinerary Rejected**\n\n"
+            f"Feedback: {state.get('human_feedback', 'N/A')}\n\n"
+            "Feel free to start a new query with updated preferences."
+        )
+    }
+
+
+
+
+def final_agent(state: TravelState) -> dict:
+    """
+    Produces the polished, user-facing final response.
+    Packages: itinerary, budget, chosen transit/hotel, weather, and booking links.
+    """
+    itinerary = state.get("itinerary", "")
+    budget = state.get("budget_results", "")
+    weather = state.get("weather_results", "")
+    flights = state.get("flight_results", "")
+    trains = state.get("rails_results", "")
+    buses = state.get("bus_results", "")
+    hotels = state.get("hotel_results", "")
+    human_feedback = state.get("human_feedback", "")
+
+    final_prompt = f"""
+    You are the Final Response Agent for the Tessera Travel Engine.
+    Compose a single, polished, user-facing answer that:
+      1. Opens with a warm, concise summary of the trip.
+      2. Presents the approved day-by-day itinerary (keep Markdown formatting).
+      3. Includes a "Budget Snapshot" section (₹ breakdown, total, feasibility).
+      4. Adds a "Getting There" section listing top transit picks with booking URLs.
+      5. Adds a "Where to Stay" section with hotel picks.
+      6. Adds a "Weather & Packing" section.
+      7. Closes with a short "Next Steps" note.
+
+    Do NOT include internal agent chatter, raw JSON, or debug text.
+    Use clean headings and bullet points.
+    Include the human feedback note only if the user requested changes: "{human_feedback}"
+
+    Approved Itinerary:
+    {itinerary}
+
+    Budget Data:
+    {budget}
+
+    Transit — Flights: {str(flights)[:400]}
+    Transit — Trains: {str(trains)[:400]}
+    Transit — Buses: {str(buses)[:400]}
+
+    Hotels: {str(hotels)[:400]}
+    Weather: {str(weather)[:300]}
+    """
+
+    response = final_agent_model.invoke([
+        SystemMessage(content="You are a precise, friendly travel concierge."),
+        HumanMessage(content=final_prompt)
+    ])
+
+    return {
+        "final_response": response.content,
+        "messages": [response]
+    }
+
+
+
+
+
+
+
+
+DATABASE_URL = get_database_url()
+
+_pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    max_size=20,
+    min_size=2,
+    kwargs={
+        "autocommit": True,        # REQUIRED by langgraph
+        "row_factory": dict_row,   # REQUIRED by langgraph
+    },
+    open=True,
+)
+
+checkpointer = PostgresSaver(_pool)
+checkpointer.setup()               # creates tables (idempotent)
+
+
+
+
+
+
+
+
+
+
+
+def build_graph():
+    workflow = StateGraph(TravelState)
+    workflow.add_node("guardrails_node", guardrails_node)
+    workflow.add_node("blocked_request_node", blocked_request_node)
+    workflow.add_node("supervisor_agent", supervisor_agent)
+    workflow.add_node("flight_agent", flight_agent)
+    workflow.add_node("rail_agent", rail_agent)
+    workflow.add_node("bus_agent", bus_agent)
+    workflow.add_node("hotel_agent", hotel_agent)
+    workflow.add_node("weather_agent", weather_agent)
+    workflow.add_node("budget_agent", budget_agent)
+    workflow.add_node("itinerary_agent", iternary_agent)
+    workflow.add_node("human_approval_node", human_approval_node)
+    workflow.add_node("revise_itinerary_node", revise_itinerary_node)
+    workflow.add_node("rejected_node", rejected_node)
+    workflow.add_node("final_agent", final_agent)
+
+    # Entry
+    workflow.add_edge(START, "guardrails_node")
+    workflow.add_conditional_edges(
+        "guardrails_node",
+        route_after_guardrails,
+        {"supervisor_agent": "supervisor_agent", "blocked_request_node": "blocked_request_node"}
+    )
+    workflow.add_edge("blocked_request_node", END)
+
+    # Supervisor → specialists
+    workflow.add_edge("supervisor_agent", "flight_agent")
+    workflow.add_edge("flight_agent", "rail_agent")
+    workflow.add_edge("rail_agent", "bus_agent")
+    workflow.add_edge("bus_agent", "hotel_agent")
+    workflow.add_edge("hotel_agent", "weather_agent")
+    workflow.add_edge("weather_agent", "budget_agent")
+    workflow.add_edge("budget_agent", "itinerary_agent")
+    workflow.add_edge("itinerary_agent", "human_approval_node")
+
+    # HITL loop
+    workflow.add_conditional_edges(
+        "human_approval_node",
+        route_after_approval,
+        {
+            "final_agent": "final_agent",
+            "revise_itinerary_node": "revise_itinerary_node",
+            "rejected_node": "rejected_node"
+        }
+    )
+    workflow.add_edge("revise_itinerary_node", "human_approval_node")
+    workflow.add_edge("rejected_node", END)
+    workflow.add_edge("final_agent", END)
+    return workflow.compile(checkpointer=checkpointer)
+  
+
+
