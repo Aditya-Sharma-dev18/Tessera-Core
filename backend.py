@@ -99,10 +99,9 @@ class guradrailsvalidation(BaseModel):
 
 
 
-
 def guardrails_node(state:TravelState)->dict:
     query=state.get("user_query","").strip()
-    system_prompt="""
+    guardrails_system_prompt="""
      You are an Input Guardrail agent for the Tessera Travel Engine.
       Evaluate the incoming user query based on three strict criteria:
     
@@ -116,7 +115,7 @@ def guardrails_node(state:TravelState)->dict:
     user_prompt = f"User Query: \"{query}\""
     struct_guardrails=guardrails_model.with_structured_output(guradrailsvalidation)
     result:guradrailsvalidation=struct_guardrails.invoke([
-        {"role":"system","content":system_prompt},
+        {"role":"system","content":guardrails_system_prompt},
         {"role":"user","content":user_prompt}
     ])
     return {
@@ -140,19 +139,31 @@ def blocked_request_node(state: TravelState) -> dict:
         "approved": "rejected"
     }
 
-
-def supervisor_agent(state:TravelState):
-    system_prompt=""" 
+KNOWN_AGENTS = ["flight_agent", "rail_agent", "bus_agent", "hotel_agent", "weather_agent", "budget_agent", "itinerary_agent"]
 
 
 
+class SupervisorOutput(BaseModel):
+    selected_agents:str=Field(description="List of selected specialist agent names.")
+    trip_constraints:str=Field(description="Extracted trip parameters like origin, destination, budget, dates")
+    reasoning:str=Field(description="Why these agents were selected")
 
 
 
-
-
-    """
-    user_prompt=f""
+def supervisor_agent(state:TravelState)->dict:
+    query=state.get("user_query","")
+    supervisor_system_prompt = f"""You are the Supervisor Agent. Route the travel request to required specialist agents.
+    Available agents: {KNOWN_AGENTS}.
+    Ensure 'itinerary_agent' is always included."""
+    try:
+        structured_supervsior_model=supervisor_model.with_structured_output(SupervisorOutput)
+        supervisor_result:SupervisorOutput= structured_supervsior_model.invoke(
+            [
+                {"role":"system","content":supervisor_system_prompt},
+                {"role":"user","content":query}
+            ]
+        )
+        agents=[a for a in supervisor_result.selected_agents if a in KNOWN_AGENTS ]
 
 
 
@@ -185,3 +196,68 @@ def final_response(state:TravelState):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+graph=StateGraph(TravelState)
