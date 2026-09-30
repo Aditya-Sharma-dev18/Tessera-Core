@@ -447,11 +447,31 @@ document.addEventListener("DOMContentLoaded", () => {
   // ═══════════════════════════════════════════════════════════════
   function renderMarkdownAsDays(md) {
     if (!md) return `<p style="color:#8189a8;">No itinerary generated.</p>`;
+
+    // Separate Practical Tips from days
+    let tipsHtml = "";
+    let itineraryCore = md;
+    const tipsRegex = /(?:^|\n)\s*#{1,3}\s*Practical Tips[\s\S]*$/i;
+    const tipsMatch = md.match(tipsRegex);
+    if (tipsMatch) {
+      const tipsRaw = tipsMatch[0].replace(/^[\s\n]*#{1,3}\s*Practical Tips/i, "").trim();
+      tipsHtml = `
+        <div class="tips-box">
+          <div class="tips-header">
+            <span class="tips-icon">💡</span>
+            <h6>PRACTICAL TRAVEL TIPS & ADVISORY</h6>
+          </div>
+          <div class="tips-content">${markdownToHtml(tipsRaw)}</div>
+        </div>
+      `;
+      itineraryCore = md.slice(0, tipsMatch.index).trim();
+    }
+
     const dayRegex = /(?:^|\n)\s*(?:#{1,4}\s*|\*\*\s*)?(?:DAY|Day)\s*0*(\d+)[\s—\-–:]+([^\n]*)\n([\s\S]*?)(?=(?:\n\s*(?:#{1,4}\s*|\*\*\s*)?(?:DAY|Day)\s*0*\d+)|$)/gi;
     const days = [];
     let match;
 
-    while ((match = dayRegex.exec(md)) !== null) {
+    while ((match = dayRegex.exec(itineraryCore)) !== null) {
       days.push({
         num: match[1],
         title: (match[2] || "").trim().replace(/\*\*/g, "").replace(/^[—\-–:\s]+/, "").trim(),
@@ -459,19 +479,72 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    if (days.length >= 2) {
-      return days.map(d => `
+    let daysHtml = "";
+    if (days.length >= 1) {
+      daysHtml = days.map(d => `
         <div class="day-box">
           <h6>DAY ${String(d.num).padStart(2, '0')}${d.title ? ` — ${d.title.toUpperCase()}` : ''}</h6>
-          <div class="day-content">${markdownToHtml(d.content)}</div>
+          <div class="day-content">${formatDayTimeline(d.content)}</div>
         </div>
       `).join("");
+    } else {
+      daysHtml = `
+        <div class="day-box">
+          <h6>ITINERARY</h6>
+          <div class="day-content">${markdownToHtml(itineraryCore)}</div>
+        </div>
+      `;
     }
 
-    return `<div class="day-box">
-      <h6>ITINERARY</h6>
-      <div class="day-content">${markdownToHtml(md)}</div>
-    </div>`;
+    return daysHtml + tipsHtml;
+  }
+
+  function formatDayTimeline(content) {
+    if (!content) return "";
+    const lines = content.split("\n");
+    const slots = [];
+    let currentSlot = null;
+
+    for (let rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      // Match bullets like: * Morning: ... or * Morning – ...
+      const slotMatch = line.match(/^[*•-]?\s*(Morning|Afternoon|Evening|Stay|Night)[\s:–—\-]+([\s\S]*)$/i);
+      if (slotMatch) {
+        const slotType = slotMatch[1].toLowerCase();
+        const slotText = slotMatch[2].trim();
+        currentSlot = { type: slotType, text: slotText };
+        slots.push(currentSlot);
+      } else if (currentSlot) {
+        currentSlot.text += " " + line;
+      } else {
+        slots.push({ type: "general", text: line });
+      }
+    }
+
+    if (slots.length >= 2) {
+      const icons = {
+        morning: "🌅",
+        afternoon: "☀️",
+        evening: "🌙",
+        stay: "🏨",
+        night: "🌙",
+        general: "📍"
+      };
+      return `
+        <div class="day-timeline">
+          ${slots.map(s => `
+            <div class="timeline-slot slot-${s.type}">
+              <div class="slot-badge">${icons[s.type] || "📍"} <span>${s.type.toUpperCase()}</span></div>
+              <div class="slot-body">${markdownToHtml(s.text)}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    return markdownToHtml(content);
   }
 
 function markdownToHtml(md) {
@@ -495,7 +568,6 @@ function markdownToHtml(md) {
           .map(cell => cell.trim());
 
       const headers = parseRow(rows[0]);
-      // rows[1] separator line hoti hai (|---|---|), usko chhod do
       const bodyRows = rows.slice(2).map(parseRow);
 
       const thead = headers
@@ -520,18 +592,24 @@ function markdownToHtml(md) {
     }
   );
 
-  // 3. Headings, bold, italic, links
-  text = text.replace(/^###\s+(.+)$/gm, '<h5 class="md-h" style="margin:12px 0 6px;font-weight:600;color:#111827;">$1</h5>');
-  text = text.replace(/^##\s+(.+)$/gm,  '<h4 class="md-h" style="margin:14px 0 8px;font-weight:700;color:#111827;">$1</h4>');
+  // 3. Headings, bold, links
+  text = text.replace(/^###\s+(.+)$/gm, '<h5 class="md-h" style="margin:12px 0 6px;font-weight:600;color:var(--text-primary);">$1</h5>');
+  text = text.replace(/^##\s+(.+)$/gm,  '<h4 class="md-h" style="margin:14px 0 8px;font-weight:700;color:var(--accent-indigo);">$1</h4>');
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  text = text.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="md-link" style="color:#4f46e5;text-decoration:underline;">$1</a>');
-  text = text.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
-  text = text.replace(/(<li>[\s\S]*?<\/li>\s*)+/g, m => `<ul style="margin:8px 0;padding-left:20px;">${m}</ul>`);
-  text = text.replace(/\n{2,}/g, '</p><p style="margin:8px 0;">');
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="md-link" style="color:var(--accent-indigo);text-decoration:underline;">$1</a>');
+
+  // Bullet items (*, -, •)
+  text = text.replace(/^\s*[*•-]\s+(.+)$/gm, '<li class="md-li">$1</li>');
+  text = text.replace(/(<li class="md-li">[\s\S]*?<\/li>\s*)+/g, m => `<ul class="md-ul" style="margin:8px 0;padding-left:20px;">${m}</ul>`);
+
+  // Inline italics (only inside text, not at line start)
+  text = text.replace(/(?<=\S)\*([^*\n]+?)\*(?=\S)/g, '<em>$1</em>');
+  text = text.replace(/(?<=\S)_([^_\n]+?)_(?=\S)/g, '<em>$1</em>');
+
+  text = text.replace(/\n{2,}/g, '</p><p style="margin:6px 0;">');
   text = text.replace(/(?<!<\/li>|<\/ul>|<\/h4>|<\/h5>|<\/div>|<\/p>)\n/g, '<br>');
 
-  return `<div class="md-body"><p style="margin:8px 0;">${text}</p></div>`;
+  return `<div class="md-body"><p style="margin:4px 0;">${text}</p></div>`;
 }
 
   function escapeHtml(str) {

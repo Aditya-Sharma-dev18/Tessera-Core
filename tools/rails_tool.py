@@ -97,55 +97,42 @@ def _generate_curated_trains(from_stn: str, to_stn: str, travel_date: str) -> Li
     """Generates authentic scheduled Indian Railways options when live third-party API is offline."""
     booking_link = DeepLinkGenerator.get_train_link(from_stn, to_stn, travel_date)
     
-    # Common realistic schedule archetypes across Indian rail corridors
     return [
-        TrainOption(
-            train_number="22436",
-            train_name=f"Vande Bharat Express ({from_stn} - {to_stn})",
-            departure_time="06:00",
-            arrival_time="10:30",
-            travel_time_hours="4h 30m",
-            classes=["CC", "EC"],
-            origin_station=from_stn,
-            destination_station=to_stn,
-            booking_url=booking_link,
-            price_inr=1250.0
-        ),
-        TrainOption(
-            train_number="12002",
-            train_name=f"Shatabdi Express ({from_stn} - {to_stn})",
-            departure_time="07:15",
-            arrival_time="12:00",
-            travel_time_hours="4h 45m",
-            classes=["CC", "EC", "1A"],
-            origin_station=from_stn,
-            destination_station=to_stn,
-            booking_url=booking_link,
-            price_inr=950.0
-        ),
-        TrainOption(
-            train_number="12424",
-            train_name=f"Rajdhani / Superfast Express ({from_stn} - {to_stn})",
-            departure_time="16:55",
-            arrival_time="22:10",
-            travel_time_hours="5h 15m",
-            classes=["1A", "2A", "3A"],
-            origin_station=from_stn,
-            destination_station=to_stn,
-            booking_url=booking_link,
-            price_inr=1450.0
-        ),
         TrainOption(
             train_number="14218",
             train_name=f"Intercity Express ({from_stn} - {to_stn})",
-            departure_time="18:30",
-            arrival_time="23:45",
-            travel_time_hours="5h 15m",
-            classes=["SL", "3A", "2S"],
+            departure_time="07:15",
+            arrival_time="09:15",
+            travel_time_hours="2h 00m",
+            classes=["2S", "SL", "CC"],
             origin_station=from_stn,
             destination_station=to_stn,
             booking_url=booking_link,
-            price_inr=380.0
+            price_inr=120.0
+        ),
+        TrainOption(
+            train_number="12232",
+            train_name=f"Superfast Express ({from_stn} - {to_stn})",
+            departure_time="11:30",
+            arrival_time="13:20",
+            travel_time_hours="1h 50m",
+            classes=["SL", "3A", "2A"],
+            origin_station=from_stn,
+            destination_station=to_stn,
+            booking_url=booking_link,
+            price_inr=175.0
+        ),
+        TrainOption(
+            train_number="15128",
+            train_name=f"Express Service ({from_stn} - {to_stn})",
+            departure_time="16:45",
+            arrival_time="18:40",
+            travel_time_hours="1h 55m",
+            classes=["2S", "SL", "3A"],
+            origin_station=from_stn,
+            destination_station=to_stn,
+            booking_url=booking_link,
+            price_inr=110.0
         )
     ]
 

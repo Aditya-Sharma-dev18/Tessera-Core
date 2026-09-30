@@ -36,7 +36,7 @@ def _to_num(value, default: float = 0.0) -> float:
 
 
 @tool
-def search_hotels(city: str, budget_tier: str = "moderate") -> str:
+def search_hotels(city: str, budget_tier: str = "moderate", base_rate: int = 2500) -> str:
     """
     Search real verified hotels and homestays with realistic pricing tailored to budget tier.
     """
@@ -47,20 +47,21 @@ def search_hotels(city: str, budget_tier: str = "moderate") -> str:
         return json.dumps({"city": city, "hotels": [], "error": "API keys missing"}, ensure_ascii=False)
 
     tier = budget_tier.lower() if budget_tier else "moderate"
+    base = max(800, int(base_rate or 2500))
 
     if tier == "luxury":
-        query = f"luxury 5 star hotels resorts in {city} room tariff price per night booking makemytrip"
-        default_price = 7500
+        query = f"luxury 5 star resorts hotels in {city} room tariff price per night"
+        default_price = max(2500, int(base * 2.2))
     elif tier == "budget":
-        query = f"budget hotels homestay guest house in {city} room price per night tariff goibibo"
-        default_price = 1200
+        query = f"budget hotels homestay guest house in {city} room price per night"
+        default_price = max(800, int(base * 0.85))
     else:
-        query = f"hotels in {city} room tariff price per night makemytrip goibibo"
-        default_price = 2500
+        query = f"hotels resorts homestays in {city} room tariff price per night"
+        default_price = max(1400, int(base * 1.3))
 
     try:
         tavily = TavilyClient(api_key=tavily_key)
-        res = tavily.search(query=query, search_depth="advanced", max_results=5)
+        res = tavily.search(query=query, search_depth="advanced", max_results=8)
 
         context_parts = []
         for r in res.get("results", []):
@@ -81,27 +82,39 @@ def search_hotels(city: str, budget_tier: str = "moderate") -> str:
             max_tokens=2048,
         )
 
-        extraction_prompt = f"""You are a strict Hotel Data Extractor. Extract REAL accommodation options from the search snippets for '{city}' tailored to '{tier}' tier.
+        extraction_prompt = f"""You are a strict Hotel Data Extractor. Extract REAL accommodation options (hotels, resorts, guest houses, homestays) from the search snippets for '{city}' tailored to '{tier}' tier.
 
 SEARCH SNIPPETS:
 {context[:4000]}
 
 STRICT RULES:
-1. ACTUAL PROPERTY NAMES ONLY: Reject aggregator headlines like 'Top 10 Hotels in...', 'Booking.com', 'Tripadvisor'.
+1. ACTUAL PROPERTY NAMES ONLY: Reject aggregator listicle titles like 'Top 10 Hotels in...', 'Booking.com', 'Tripadvisor'. Clean out trailing aggregator suffixes like '| MakeMyTrip'.
 2. Extract numeric tariff in INR if found. Otherwise leave None.
 """
-        structured_llm = llm.with_structured_output(HotelSearchModel)
-        parsed: HotelSearchModel = structured_llm.invoke([
-            {"role": "system", "content": "Extract genuine hotel properties from search context."},
-            {"role": "user", "content": extraction_prompt}
-        ])
+        try:
+            structured_llm = llm.with_structured_output(HotelSearchModel, method="json_mode")
+            parsed: HotelSearchModel = structured_llm.invoke([
+                {"role": "system", "content": "Extract genuine hotel and resort properties from search context as JSON matching the schema."},
+                {"role": "user", "content": extraction_prompt}
+            ])
+        except Exception:
+            structured_llm = llm.with_structured_output(HotelSearchModel)
+            parsed: HotelSearchModel = structured_llm.invoke([
+                {"role": "system", "content": "Extract genuine hotel properties from search context."},
+                {"role": "user", "content": extraction_prompt}
+            ])
 
-        aggregator_keywords = ["top 10", "best hotels", "booking.com", "tripadvisor", "makemytrip", "goibibo", "hotels in"]
+        aggregator_keywords = [
+            "top 10", "top 20", "best hotels in", "10 best", "11 best", "18 best",
+            "places to stay in", "deals with lowest prices", "tripadvisor", "booking.com"
+        ]
         hotels = []
         seen = set()
 
         for h in parsed.hotels:
             name = (h.name or "").strip()
+            # Clean aggregator badges
+            name = re.sub(r"\s*[|\-–—]\s*(MakeMyTrip|Goibibo|Booking\.com|Tripadvisor|Agoda|Yatra|Trip Ideas).*", "", name, flags=re.I).strip()
             if not name or name.lower() in seen:
                 continue
             if any(k in name.lower() for k in aggregator_keywords):

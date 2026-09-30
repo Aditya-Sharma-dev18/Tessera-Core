@@ -591,6 +591,122 @@ textarea::placeholder {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   DAY TIMELINE SLOTS
+   ═══════════════════════════════════════════════════════════════ */
+.day-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.timeline-slot {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 14px;
+  background: #ffffff;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.timeline-slot:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+.slot-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+  min-width: 105px;
+  flex-shrink: 0;
+}
+
+.slot-morning .slot-badge {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.slot-afternoon .slot-badge {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.slot-evening .slot-badge,
+.slot-night .slot-badge {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.slot-stay .slot-badge {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.slot-general .slot-badge {
+  background: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #e5e7eb;
+}
+
+.slot-body {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.6;
+  flex: 1;
+}
+
+.slot-body p {
+  margin: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PRACTICAL TIPS BOX
+   ═══════════════════════════════════════════════════════════════ */
+.tips-box {
+  margin-top: 14px;
+  background: rgba(99, 102, 241, 0.04);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+
+.tips-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tips-header h6 {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--accent-indigo);
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  margin: 0;
+}
+
+.tips-content {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    HITL ACTION BAR
    ═══════════════════════════════════════════════════════════════ */
 .hitl-card {

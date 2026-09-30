@@ -304,24 +304,81 @@ class UniversalGeoResolution(BaseModel):
 _GEO_CACHE: dict[str, UniversalGeoResolution] = {}
 
 
+def _fetch_geo_grounding(origin: str, destination: str) -> str:
+    """Retrieves verified web snippets via Tavily for destination geography, route, and base settlement."""
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_key:
+        return ""
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=tavily_key)
+        q = f"{destination} location district nearest railway station airport route terrain altitude rivers waterbodies"
+        res = client.search(query=q, max_results=4, search_depth="basic")
+        snippets = []
+        for r in res.get("results", []):
+            content = (r.get("content") or "").strip()
+            title = (r.get("title") or "").strip()
+            if content:
+                snippets.append(f"• [{title}] {content[:400]}")
+        return "\n".join(snippets)
+    except Exception as e:
+        print(f"⚠️ Geo grounding lookup skipped: {e}")
+        return ""
+
+
+def _fetch_destination_attractions(destination: str) -> str:
+    """Retrieves verified tourist attractions and authentic local sights via Tavily to prevent fictional places."""
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_key:
+        return ""
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=tavily_key)
+        q = f"{destination} top attractions places to visit tourist sights famous landmarks"
+        res = client.search(query=q, max_results=4, search_depth="basic")
+        items = []
+        for r in res.get("results", []):
+            content = (r.get("content") or "").strip()
+            title = (r.get("title") or "").strip()
+            if content and len(content) > 30:
+                items.append(f"• [{title}]: {content[:280]}")
+        return "\n".join(items)
+    except Exception as e:
+        print(f"⚠️ Attractions lookup skipped: {e}")
+        return ""
+
+
 def resolve_locations_dynamically(origin: str, destination: str) -> UniversalGeoResolution:
-    """Dynamically resolves full geography, transit, and local economics with ZERO hardcoded values."""
+    """Dynamically resolves full geography, transit, and local economics with Tavily live grounding."""
     cache_key = f"{origin.lower().strip()}___{destination.lower().strip()}"
     if cache_key in _GEO_CACHE:
         return _GEO_CACHE[cache_key]
 
-    system_prompt = """You are an Expert Worldwide Travel Geographer & Transit Intelligence Engine.
-Analyze the given origin and destination pair. Calculate physical realities, accurate transit hubs, real station/airport codes, and realistic local economics.
+    web_grounding = _fetch_geo_grounding(origin, destination)
+    grounding_block = (
+        f"\nVERIFIED REAL-WORLD WEB CONTEXT FOR '{destination}':\n{web_grounding}\n"
+        if web_grounding else ""
+    )
 
-STRICT INSTRUCTIONS:
-1. NO BIAS / NO HARDCODING: Evaluate every location according to its real-world physical and economic facts.
-2. If in India:
-   - Provide real IRCTC codes if available (e.g., Shahjahanpur -> 'SPN', Hardoi -> 'HRI', Bareilly -> 'BE', Rishikesh -> 'RKSH').
-   - For short plains distances (<120 km), primary transit must be train or regional bus (1-2 hours travel time). NEVER classify short plains routes as overnight journeys.
-3. If International:
-   - Set is_international=True. Calculate living costs and hotel rates converted to realistic INR equivalents.
-4. Geographic Realism:
-   - Accurately describe the destination's geography in `geographic_features`. If a city is landlocked and lacks a river or beach (e.g., Hardoi), explicitly declare it so the itinerary never invents one.
+    system_prompt = f"""You are an Expert Worldwide Travel Geographer & Transit Intelligence Engine.
+Analyze the given origin and destination pair. Calculate physical realities, accurate transit hubs, real station/airport codes, and realistic local economics.
+{grounding_block}
+CRITICAL INSTRUCTIONS (STRICT ZERO-HALLUCINATION POLICY):
+1. FACTUAL GROUNDING: Base all geographic and logistics attributes strictly on physical reality. If web context is provided above, trust it over any generic assumptions.
+2. DISTINGUISH TRANSIT GATEWAY HUB VS STAY BASE:
+   - For mountain shrines, hill treks, national parks, or remote destinations (e.g. Kartik Swami Temple, Kedarnath, Chopta, Valley of Flowers, Spiti, Leh, Jibhi):
+     * `destination_transit_hub`: Major transit city where long-distance trains, flights, or intercity express buses arrive (e.g., Rishikesh, Haridwar, Dehradun, Kathgodam, Chandigarh, Kalka).
+     * `destination_stay_town`: The ACTUAL settlement/village/town closest to the destination where hotels/homestays exist (e.g., Kanakchauri or Rudraprayag for Kartik Swami; Chopta/Sari for Tungnath; Kaza for Spiti). DO NOT keep travelers staying at the gateway city (e.g. Rishikesh) if the attraction is 100-200 km deep into the mountains!
+     * `is_remote`: Set to True.
+     * `terrain_type`: "hills" or "mountains".
+     * `last_mile_mode`: Authentic regional mountain transport (e.g. "Mountain Shared Jeep / Private Taxi from transit hub, followed by ridge trail trek").
+     * `last_mile_duration`: Realistic mountain driving and trekking time (e.g. "5–6h mountain drive + 2h trek").
+     * `route_advice`: Specify real mountain highway routes (e.g., NH 7 / NH 58 via Devprayag, Srinagar, Rudraprayag to Kanakchauri) and real altitude/weather precautions.
+3. If in India:
+   - Provide real IRCTC codes if available (e.g., New Delhi -> 'NDLS', Haridwar -> 'HW', Rishikesh -> 'RKSH', Lucknow -> 'LKO', Hardoi -> 'HRI').
+   - For short plains distances (<150 km), primary transit must be train or regional bus (1-2 hours).
+4. Physical Realism:
+   - Accurately describe the destination's geography in `geographic_features`. Declare whether the destination is landlocked, agricultural plains, coastal, or high mountain. If landlocked (e.g. Hardoi), state clearly that no rivers flow through the main town so the itinerary never invents one.
 """
     user_prompt = f'Resolve logistics for Trip Origin: "{origin}" to Destination: "{destination}"'
 
@@ -331,6 +388,19 @@ STRICT INSTRUCTIONS:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ])
+
+        # Sanitize against placeholder defaults
+        if not res.destination_stay_town or res.destination_stay_town.lower() in ("destination", ""):
+            res.destination_stay_town = destination
+        if not res.destination_transit_hub or res.destination_transit_hub.lower() in ("destination", ""):
+            res.destination_transit_hub = destination
+        if not res.origin_transit_city or res.origin_transit_city.lower() in ("origin", ""):
+            res.origin_transit_city = origin
+        if not res.origin_display or res.origin_display.lower() in ("origin", ""):
+            res.origin_display = origin
+        if not res.destination_display or res.destination_display.lower() in ("destination", ""):
+            res.destination_display = destination
+
         _GEO_CACHE[cache_key] = res
         return res
     except Exception as e:
@@ -693,8 +763,16 @@ def hotel_agent(state: TravelState) -> dict:
     else:
         budget_tier = "moderate"
 
+    stay_city = geo.destination_stay_town
+    if not stay_city or stay_city.lower() in ("destination", "user destination", ""):
+        stay_city = str(c.get("destination") or "City Center")
+
     try:
-        results = search_hotels.invoke({"city": geo.destination_stay_town, "budget_tier": budget_tier})
+        results = search_hotels.invoke({
+            "city": stay_city,
+            "budget_tier": budget_tier,
+            "base_rate": geo.typical_budget_stay_price_per_night_inr or 2000
+        })
     except Exception as exc:
         results = f"Hotel research lookup failed: {exc}"
 
@@ -889,11 +967,36 @@ def itinerary_agent(state: TravelState) -> dict:
     origin = geo.origin_display
     is_day_trip = (total_days == 1)
 
+    stay_town = geo.destination_stay_town or destination
+    hotel_name = hotel.get('name', 'Verified Stay')
+    hotel_price = hotel.get('price', 1500)
+
     stay_instructions = (
         f"- For this 1-DAY TRIP, travelers do NOT stay overnight in {destination}. Schedule morning arrival and evening return transit back to {origin}."
         if is_day_trip else
-        f"- Travelers will stay overnight at: '{hotel['name']}' (Rate: ₹{hotel['price']:,}/night)."
+        f"- Travelers will stay overnight at: '{hotel_name}' in {stay_town} (Rate: ₹{hotel_price:,}/night)."
     )
+
+    # Fetch real attractions to eliminate fictitious sightseeing
+    attractions = _fetch_destination_attractions(destination)
+    attractions_section = (
+        f"\nVERIFIED REAL-WORLD ATTRACTIONS IN '{destination}':\n{attractions}\n"
+        if attractions else ""
+    )
+
+    remote_guidelines = ""
+    if geo.is_remote:
+        remote_guidelines = f"""
+4. MULTI-LEG MOUNTAIN & REMOTE ROUTE LOGISTICS:
+   - Transit Gateway Hub: {geo.destination_transit_hub}
+   - Actual Destination Base: {stay_town}
+   - Mountain Transfer Mode: {geo.last_mile_mode} ({geo.last_mile_duration})
+   - Route Guidance: {geo.route_advice}
+   - DAY 1 REALISTIC PROGRESSION: Travelers take transit from {origin} to gateway hub ({geo.destination_transit_hub}), then embark on the scenic mountain journey up to {stay_town}. Check into accommodation in {stay_town} and acclimatize.
+   - EXPLORATION DAYS: Conduct excursions or treks to {destination}. Celebrate authentic geographical landmarks ({geo.geographic_features}).
+   - FINAL DAY: Descend from {stay_town} via gateway hub ({geo.destination_transit_hub}) for return transit to {origin}.
+   - ABSOLUTE ZERO HALLUCINATION: NEVER suggest auto-rickshaws, e-rickshaws, or scooters for cross-district mountain routes. NEVER claim travelers can take a 30-minute auto ride from a plains/foothills city to a high Himalayan peak 180 km away!
+"""
 
     prompt = f"""You are the Lead Itinerary Architect. Synthesize a strictly grounded day-by-day plan.
 
@@ -907,23 +1010,28 @@ ABSOLUTE HARD RULES (DO NOT DEVIATE):
 2. STRICT OUTPUT FORMAT:
    - Output ONLY the chronological days (DAY 01 to DAY {total_days:02d}) and end with "## Practical Tips".
    - DO NOT output any cost tables or Markdown pipe tables (|---|). Dedicated cards handle budget.
+   - For each day, use this EXACT structure:
+     DAY XX — [THEME / TITLE]
+     * Morning: [Detailed morning activity or travel leg]
+     * Afternoon: [Afternoon sightseeing, meal spot, or key milestone]
+     * Evening: [Sunset viewpoint, cultural activity, or dinner]
+     * Stay: {stay_town if not is_day_trip else "Same-day return to " + origin} — {"Same-day evening return to " + origin if is_day_trip else hotel_name + f" (₹{hotel_price:,}/night)"}
 
-3. GEOGRAPHIC REALISM:
+3. GEOGRAPHIC & FACTUAL REALISM (ZERO TOLERANCE FOR HALLUCINATIONS):
    - Destination: {destination}. Physical features: {geo.geographic_features}.
-   - DO NOT hallucinate nonexistent riverfronts, beaches, or fictional monuments.
-   - Stick to verified local bazaars, prominent temples, monuments, and authentic culinary spots.
-
+   - Base town / Stay town: {stay_town}.
+   {attractions_section}
+   - STRICT ATTRACTION GROUNDING: Base activities strictly on verified landmarks (such as those listed above), authentic local bazaars, or real nature preserves (e.g. Sandi Bird Sanctuary, Prahlad Kund for Hardoi).
+   - WATERBODY FACT-CHECK: If the destination is landlocked or has no river flowing through it (e.g. Hardoi, Shahjahanpur, Jaipur center), NEVER invent riverfronts, rivers (e.g. NEVER invent the Saryu river in Hardoi — Saryu is in Ayodhya!), river walks, ghats, or boat rides!
+   - NO CROSS-DISTRICT INVENTIONS: DO NOT place attractions from neighboring or distant districts into this destination (e.g. Kakori belongs to Lucknow, NOT Hardoi; Beatles Ashram belongs to Rishikesh, NOT anywhere else).
+   - TRAILHEAD ACCURACY: Verify where trails begin (e.g. Tungnath & Chandrashila begins directly from roadside at Chopta base, NOT from Sari village; Sari village is only for Deoria Tal).
+   - ROUTE INTEGRITY: Stick strictly to authentic road corridors. For Chopta/Tungnath, route is via Rishikesh -> Devprayag -> Srinagar -> Rudraprayag -> Kund -> Ukhimath -> Dugalbitta -> Chopta. DO NOT invent detours to Kanakchauri or Gaurikund.
+   - TRANSIT FACTUALITY: DO NOT invent fictitious 5-digit train numbers or inverted schedules. If an exact train number is not verified from tool data, refer to it by its authentic service name (e.g., 'Morning Intercity Express / Superfast') rather than guessing numbers like '22436' or '12055'.
+{remote_guidelines}
 User Query: {query}
 Transit Details: {transit.get('name', 'Direct Transit')}
 
-Format each day:
-DAY XX — [Theme]
-* Morning – [Specific departure or morning arrival activity]
-* Afternoon – [Key attraction & Meal recommendation]
-* Evening – [Sunset spot, cultural activity or dinner]
-* Stay – {"Same-day evening return to " + origin if is_day_trip else hotel['name'] + f" (₹{hotel['price']:,}/night)"}
-
-End with "## Practical Tips" (weather, local transit, cash advice).
+End with "## Practical Tips" (weather, local transit, cash advice, altitude/clothing).
 """
     response = itinerary_model.invoke(prompt)
     return {"itinerary": response.content, "messages": [response]}
@@ -989,6 +1097,8 @@ Current Itinerary:
 {state.get('itinerary', '')}
 
 Maintain the locked stay: {state.get('selected_hotel', {}).get('name', 'Selected Hotel')}.
+STRICT FORMAT: Maintain the chronological days (DAY XX — [TITLE]) with '* Morning:', '* Afternoon:', '* Evening:', '* Stay:'.
+Do NOT output any markdown pipe tables (|---|). End with '## Practical Tips'.
 """
     response = itinerary_model.invoke(prompt)
     return {
