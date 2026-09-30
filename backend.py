@@ -428,67 +428,82 @@ def weather_agent(state: TravelState) -> dict:
 def budget_agent(state: TravelState) -> dict:
     c = _safe_constraints(state)
     budget_limit = c.get("budget", "Not Specified")
-    duration = c.get("duration_days") or c.get("days") or 5
-    travelers = c.get("travelers") or c.get("people") or 2
+    duration = c.get("duration_days") or c.get("days") or c.get("duration") or 5
+    travelers = c.get("travelers") or c.get("people") or c.get("passengers") or 2
     origin = c.get("origin", "Origin")
     destination = c.get("destination", "Destination")
+    
+    # Compute nights
+    try:
+        total_days = int(duration)
+        nights = max(1, total_days - 1)
+    except:
+        total_days = 5
+        nights = 4
+    
+    try:
+        total_travelers = int(travelers)
+    except:
+        total_travelers = 2
 
+    # Gather ALL transit data
     transit_parts = []
     if state.get("flight_results"):
-        transit_parts.append(f"FLIGHTS: {str(state['flight_results'])[:400]}")
+        transit_parts.append(f"FLIGHTS:\n{str(state['flight_results'])[:800]}")
     if state.get("rails_results"):
-        transit_parts.append(f"TRAINS: {str(state['rails_results'])[:400]}")
+        transit_parts.append(f"TRAINS:\n{str(state['rails_results'])[:600]}")
     if state.get("bus_results"):
-        transit_parts.append(f"BUSES: {str(state['bus_results'])[:600]}")
-
-    transit_info = "\n".join(transit_parts) if transit_parts else "No transit booked"
-    hotel_info = state.get("hotel_results", "standard accommodation")
+        transit_parts.append(f"BUSES:\n{str(state['bus_results'])[:600]}")
+    
+    transit_info = "\n\n".join(transit_parts) if transit_parts else "No transit data"
+    hotel_info = str(state.get("hotel_results", ""))[:800]
 
     prompt = f"""
-You are the Financial & Budget Specialist Agent.
+You are a Travel Budget Specialist. Return a SIMPLE breakdown.
 
-TRIP PARAMETERS:
+TRIP:
 - Route: {origin} → {destination}
-- Duration: {duration} days ({int(duration)-1 if str(duration).isdigit() else '?'} nights)
-- Travelers: {travelers}
-- User's Budget Target: ₹{budget_limit}
+- Duration: {total_days} days / {nights} nights
+- Travelers: {total_travelers}
+- Target: ₹{budget_limit}
 
-TRANSIT DATA (use exact prices if present):
+TRANSIT (use the CHEAPEST single option, round-trip):
 {transit_info}
 
-HOTEL DATA (web search results — extract prices from text):
-{str(hotel_info)[:800]}
+HOTELS (pick cheapest, use per-night rate):
+{hotel_info}
 
-EXTRACTION RULES:
-- Bus fare like "₹751 per seat" → ₹751 × travelers × 2 (round trip)
-- Flight like "₹4,850" → ₹4,850 × travelers × 2
-- Hotel like "$37/night" → ₹3,100/night (use ₹83 per USD)
-- Hotel like "R$ 336/night" → ₹5,000/night (use ₹15 per BRL)
+RULES:
+1. Transit: Take the CHEAPEST per-person fare. Multiply by {total_travelers} × 2 (round-trip only).
+2. Accommodation: Cheapest hotel rate × {nights} nights × {max(1, (total_travelers + 1) // 2)} rooms.
+3. Food: ₹600 per person per day × {total_days} days × {total_travelers}.
+4. Local transport: ₹500 per person per day × {total_days} days × {total_travelers}.
+5. Activities: ₹500 per person × {total_travelers}.
 
-CALCULATE (be realistic, not minimal):
-1. **Transit (round-trip)**: fare × travelers × 2
-2. **Accommodation**: hotel rate × nights × rooms_needed (rooms = ceil(travelers/2))
-3. **Food**: ₹1,200/person/day × {duration} days × {travelers} travelers
-4. **Local transport**: ₹800/person/day × {duration} days × {travelers}
-5. **Activities & permits**: ₹1,500/person (paragliding, entry fees, etc.)
+DO NOT multiply flights by number of flights shown. Use the CHEAPEST one.
+DO NOT include multiple transport modes. Pick ONE.
 
-TOTAL = sum of all above.
+Respond with ONLY these lines (no explanation):
 
-Format response as:
-- **Transit**: ₹X
-- **Accommodation**: ₹Y  
-- **Food**: ₹Z
-- **Local Transport**: ₹A
-- **Activities**: ₹B
-- **TOTAL: ₹(X+Y+Z+A+B)**
-- **Budget check**: [Within/Over] target of ₹{budget_limit}
+**Breakdown:**
+- Transit: ₹X
+- Accommodation: ₹Y
+- Food: ₹Z
+- Local Transport: ₹A
+- Activities: ₹B
 
-Be realistic — don't underestimate.
+**TOTAL: ₹(X+Y+Z+A+B)**
+
+**Budget check:** [Within/Over] ₹{budget_limit}
 """
     try:
         result = budget_model.invoke(prompt)
+        print(f"💰 Budget LLM output:\n{result.content}\n")
         return {"budget_results": result.content}
     except Exception as e:
+        import traceback
+        print("❌ Budget agent failed:")
+        traceback.print_exc()
         return {"budget_results": f"Budget calculation failed: {str(e)}"}
 
 
@@ -504,36 +519,76 @@ def iternary_agent(state: TravelState) -> dict:
     hotels = state.get("hotel_results", "")
     weather = state.get("weather_results", "")
     budget = state.get("budget_results", "")
+    selected = state.get("selected_agents", [])
 
-    prompt = f"""
-You are the Itinerary Architect Agent. Generate an exceptional day-by-day travel plan.
+    # Determine which transport modes are actually available
+    transport_available = []
+    if flights and flights.strip():
+        transport_available.append("FLIGHTS")
+    if trains and trains.strip():
+        transport_available.append("TRAINS")
+    if buses and buses.strip():
+        transport_available.append("BUSES")
+    
+    if not transport_available:
+        transport_available = ["NONE — use generic suggestions"]
+
+    prompt = f"""You are the Itinerary Architect Agent. Generate a day-by-day travel plan.
 
 User Query: {query}
 Trip Constraints: {c}
 
-Available Research Data:
-- Flights: {str(flights)[:400]}
-- Trains: {str(trains)[:400]}
-- Buses: {str(buses)[:400]}
-- Accommodation: {str(hotels)[:400]}
-- Weather: {str(weather)[:250]}
-- Budget: {str(budget)[:400]}
+SELECTED AGENTS (this is what ran): {selected}
+AVAILABLE TRANSPORT MODES: {', '.join(transport_available)}
 
-REQUIREMENTS:
-- Format EACH DAY as: "## Day N — [Title]"
-- Under each day, use bullet points: **Morning**, **Afternoon**, **Evening**, **Stay**
-- Link chosen transit and hotel recommendations
-- Add practical travel tips based on the weather
-- Use clean Markdown formatting
+RESEARCH DATA:
+- Flights: {str(flights)[:500] if flights else 'NONE AVAILABLE'}
+- Trains: {str(trains)[:500] if trains else 'NONE AVAILABLE'}
+- Buses: {str(buses)[:500] if buses else 'NONE AVAILABLE'}
+- Hotels: {str(hotels)[:600] if hotels else 'NONE AVAILABLE'}
+- Weather: {str(weather)[:250] if weather else 'NONE'}
+- Budget: {str(budget)[:400] if budget else 'NONE'}
+
+═══ CRITICAL RULES ═══
+
+1. TRANSPORTATION:
+   - Use ONLY the transport modes listed in AVAILABLE TRANSPORT MODES above.
+   - If "FLIGHTS" is available → pick the CHEAPEST flight from data, use it for arrival AND departure.
+   - If "BUSES" is available → pick the CHEAPEST bus operator, use it for arrival AND departure.
+   - If "TRAINS" is available → pick the CHEAPEST train, use it for arrival AND departure.
+   - If MULTIPLE modes available → pick ONE MODE ONLY (prefer cheapest overall).
+   - NEVER invent transport that's not in the data.
+   - NEVER mention "bus" if buses data is empty.
+   - NEVER mention "flight" if flights data is empty.
+   - NEVER mention "train" if trains data is empty.
+
+2. HOTELS:
+   - Use ONLY hotel names from Hotels data above.
+   - Pick ONE hotel for the entire stay (prefer mid-range or as per budget).
+   - Do NOT invent hotel names.
+
+3. BUDGET CONSISTENCY:
+   - Total trip cost MUST match the Budget data above.
+   - Do NOT suggest activities that exceed the user's budget.
+
+4. FORMAT (strict):
+   - Each day: "## Day N — Title"
+   - Under each day, use EXACTLY these 4 bullets:
+     * **Morning**: [activity]
+     * **Afternoon**: [activity]
+     * **Evening**: [activity]
+     * **Stay**: [hotel name from data]
+
+5. Include a final section:
+   "## Practical Tips" with weather-based packing suggestions.
+
+Start Day 1 with the actual transport mode you chose (state flight number/bus operator explicitly).
 """
-    try:
-        response = iterinary_model.invoke(prompt)
-        return {
-            "itinerary": response.content,
-            "messages": [response]
-        }
-    except Exception as e:
-        return {"itinerary": f"Itinerary generation failed: {str(e)}"}
+    response = iterinary_model.invoke(prompt)
+    return {
+        "itinerary": response.content,
+        "messages": [response]
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════

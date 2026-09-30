@@ -245,37 +245,66 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = typeof rawJson === "string" ? JSON.parse(rawJson) : rawJson;
       const hotels = data.hotels || data.results || [];
       if (!hotels.length) return "";
-      return hotels.slice(0, 4).map(h => `
-        <div class="item-card">
-          <div class="item-info">
-            <h5>${h.title || "Hotel"}</h5>
-            <p>${(h.snippet || h.content || "").slice(0, 110)}...</p>
+
+      return hotels.slice(0, 4).map(h => {
+        const name = h.name || h.title || "Hotel";
+        const rating = h.rating || "";
+        const price = h.price_per_night || 0;
+        const amenities = h.amenities || h.snippet || h.content || "";
+        const location = h.location || "";
+        const url = h.url || h.booking_url || "#";
+
+        let subtitle = "";
+        if (rating && location) subtitle = `${rating} • ${location}`;
+        else if (rating) subtitle = rating;
+        else if (location) subtitle = location;
+        else subtitle = String(amenities).slice(0, 110);
+
+        const priceHtml = price > 0
+          ? `<span class="item-price">₹${Number(price).toLocaleString()}<span style="font-size:10px;color:#9597a0;">/night</span></span>`
+          : `<span class="item-price" style="font-size:11px;color:#9597a0;">Check price</span>`;
+
+        return `
+          <div class="item-card">
+            <div class="item-info">
+              <h5>${name}</h5>
+              <p>${subtitle}</p>
+            </div>
+            <div class="item-right">
+              ${priceHtml}
+              <a href="${url}" target="_blank" class="book-link">View →</a>
+            </div>
           </div>
-          <div class="item-right">
-            <a href="${h.url || '#'}" target="_blank" class="book-link">View →</a>
-          </div>
-        </div>
-      `).join("");
-    } catch { return ""; }
+        `;
+      }).join("");
+    } catch (e) {
+      console.warn("renderHotels parse failed:", e);
+      return "";
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  ITINERARY — Markdown → HTML
+  //  ITINERARY — Markdown → HTML (FIXED day splitting)
   // ═══════════════════════════════════════════════════════════════
   function renderMarkdownAsDays(md) {
     if (!md) return `<p style="color:#8189a8;">No itinerary generated.</p>`;
 
-    const dayRegex = /(?:^|\n)(?:#+\s*)?(?:Day\s+)(\d+)[^\n]*\n([\s\S]*?)(?=(?:\n(?:#+\s*)?Day\s+\d+)|$)/gi;
+    const dayRegex = /(?:^|\n)\s*(?:#{1,4}\s*|\*\*\s*)?(?:DAY|Day)\s*0*(\d+)[\s—\-–:]+([^\n]*)\n([\s\S]*?)(?=(?:\n\s*(?:#{1,4}\s*|\*\*\s*)?(?:DAY|Day)\s*0*\d+)|$)/gi;
+
     const days = [];
     let match;
     while ((match = dayRegex.exec(md)) !== null) {
-      days.push({ num: match[1], content: match[2].trim() });
+      days.push({
+        num: match[1],
+        title: (match[2] || "").trim().replace(/\*\*/g, "").replace(/^[—\-–:\s]+/, "").trim(),
+        content: match[3].trim()
+      });
     }
 
-    if (days.length) {
+    if (days.length >= 2) {
       return days.map(d => `
         <div class="day-box">
-          <h6>DAY ${String(d.num).padStart(2, '0')}</h6>
+          <h6>DAY ${String(d.num).padStart(2, '0')}${d.title ? ` — ${d.title.toUpperCase()}` : ''}</h6>
           <div class="day-content">${markdownToHtml(d.content)}</div>
         </div>
       `).join("");
@@ -303,11 +332,40 @@ document.addEventListener("DOMContentLoaded", () => {
     // Bold
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
+    // ═════ TABLES ═════
+    html = html.replace(
+      /(^\|.+\|\s*$\n^\|[-:|\s]+\|\s*$\n(?:^\|.+\|\s*$\n?)+)/gm,
+      (tableBlock) => {
+        const lines = tableBlock.trim().split('\n').filter(l => l.trim());
+        if (lines.length < 2) return tableBlock;
+
+        const headers = lines[0].split('|').filter(c => c.trim()).map(c => c.trim());
+        const rows = lines.slice(2).map(row =>
+          row.split('|').filter(c => c.trim()).map(c => c.trim())
+        );
+
+        const headerHtml = headers.map(h =>
+          `<th style="text-align:left;padding:8px 10px;background:rgba(99,102,241,0.08);color:#4f46e5;font-weight:600;font-size:12px;border-bottom:1px solid rgba(99,102,241,0.15);">${h}</th>`
+        ).join("");
+
+        const rowsHtml = rows.map(row =>
+          `<tr>${row.map(cell =>
+            `<td style="padding:8px 10px;border-bottom:1px solid rgba(0,0,0,0.05);font-size:12.5px;color:#111215;">${cell}</td>`
+          ).join("")}</tr>`
+        ).join("");
+
+        return `<table style="width:100%;border-collapse:collapse;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid rgba(99,102,241,0.15);">
+          <thead><tr>${headerHtml}</tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>`;
+      }
+    );
+
     // Italic (after bold)
     html = html.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
 
     // Links
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, 
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
       '<a href="$2" target="_blank" class="md-link">$1</a>');
 
     // Raw URLs in angle brackets <https://...>
@@ -320,16 +378,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // Horizontal rule
     html = html.replace(/^\s*---+\s*$/gm, '<hr class="md-hr">');
 
-    // Bullets — convert "- item" to <li>
+    // Bullets
     html = html.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
-
-    // Wrap consecutive <li> in <ul>
-    html = html.replace(/(<li>[\s\S]*?<\/li>\s*)+/g, 
+    html = html.replace(/(<li>[\s\S]*?<\/li>\s*)+/g,
       m => `<ul class="md-ul">${m}</ul>`);
 
     // Paragraph splitting
     html = html.replace(/\n{2,}/g, '</p><p>');
-    html = html.replace(/(?<!<\/li>|<\/ul>|<\/h4>|<\/div>|<\/p>)\n/g, '<br>');
+    html = html.replace(/(?<!<\/li>|<\/ul>|<\/h4>|<\/div>|<\/p>|<\/table>)\n/g, '<br>');
 
     return `<div class="md-body"><p>${html}</p></div>`;
   }
@@ -341,8 +397,29 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/>/g, "&gt;");
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  //  EXTRACT TOTAL — FIXED: handles bold markdown + multiple labels
+  // ═══════════════════════════════════════════════════════════════
   function extractFirstINR(text) {
-    const m = String(text).match(/₹\s*([\d,]+)/);
-    return m ? `₹${m[1]}` : null;
+    if (!text) return null;
+    const str = String(text);
+
+    // ⚠️ Priority 1: "TOTAL: ₹XX,XXX" — handles **TOTAL: ₹XX,XXX**
+    const totalMatch = str.match(/\*{0,2}TOTAL\*{0,2}\s*[:\-]?\s*\*{0,2}\s*₹\s*([\d,]+)/i);
+    if (totalMatch) {
+      return `₹${totalMatch[1]}`;
+    }
+
+    // ⚠️ Priority 2: "Grand Total", "Estimated Total", "Final Total", "Overall Total"
+    const altMatch = str.match(/(?:Grand|Estimated|Final|Overall)\s+Total[:\s]*₹?\s*([\d,]+)/i);
+    if (altMatch) {
+      return `₹${altMatch[1]}`;
+    }
+
+    // ⚠️ Priority 3: LAST ₹ amount (usually total in breakdown)
+    const allMatches = [...str.matchAll(/₹\s*([\d,]+)/g)];
+    if (allMatches.length === 0) return null;
+
+    return `₹${allMatches[allMatches.length - 1][1]}`;
   }
 });
