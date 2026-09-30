@@ -151,6 +151,9 @@ document.addEventListener("DOMContentLoaded", () => {
     transitContainer.innerHTML = transitHtml
       || `<p style="color:#8189a8;font-size:13px;">No transit data available.</p>`;
 
+    // ⚠️ Update transit badge dynamically
+    updateTransitBadge(data);
+
     const hotelContainer = document.getElementById("hotelOptionsList");
     hotelContainer.innerHTML = renderHotels(data.hotel_results)
       || `<p style="color:#8189a8;font-size:13px;">No hotel data available.</p>`;
@@ -185,30 +188,67 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // ⚠️ NEW: Update transit type badge
+  function updateTransitBadge(data) {
+    const badge = document.getElementById("transitTypeBadge");
+    if (!badge) return;
+    const types = [];
+    if (parseTransit(data.flight_results, "recommended_flights").length) types.push("Flights");
+    if (parseTransit(data.rails_results, "trains").length) types.push("Trains");
+    if (parseTransit(data.bus_results, "recommended_buses").length) types.push("Buses");
+    badge.textContent = types.length ? types.join(" + ") : "—";
+  }
+
   // ═══════════════════════════════════════════════════════════════
   //  COMBINE TRANSIT
   // ═══════════════════════════════════════════════════════════════
   function combineTransit(flightsRaw, railsRaw, busesRaw) {
     const items = [];
+    const allRaws = [flightsRaw, railsRaw, busesRaw];
 
-    const flights = parseTransit(flightsRaw, "recommended_flights");
-    flights.forEach(f => items.push({ type: "flight", ...f }));
+    const tryParse = (raw) => {
+      if (!raw) return null;
+      try {
+        return typeof raw === "string" ? JSON.parse(raw) : raw;
+      } catch { return null; }
+    };
 
-    const trains = parseTransit(railsRaw, "trains");
-    trains.forEach(t => items.push({ type: "train", ...t }));
+    for (const raw of allRaws) {
+      const data = tryParse(raw);
+      if (!data) continue;
 
-    const buses = parseTransit(busesRaw, "recommended_buses");
-    buses.forEach(b => items.push({ type: "bus", ...b }));
+      const flights = data.recommended_flights || data.flights;
+      if (Array.isArray(flights)) flights.forEach(f => items.push({ type: "flight", ...f }));
 
-    if (!items.length) return "";
+      const trains = data.trains;
+      if (Array.isArray(trains)) trains.forEach(t => items.push({ type: "train", ...t }));
 
-    return items.slice(0, 6).map(item => {
+      const buses = data.recommended_buses || data.buses;
+      if (Array.isArray(buses)) buses.forEach(b => items.push({ type: "bus", ...b }));
+    }
+
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      const key = `${item.airline || item.train_name || item.operator_name}|${item.departure_time}|${item.price_inr || item.estimated_price_inr}`;
+      if (!seen.has(key)) { seen.add(key); unique.push(item); }
+    }
+
+    if (!unique.length) return "";
+
+    return unique.slice(0, 6).map(item => {
       const icon = item.type === "flight" ? "✈️" : item.type === "train" ? "🚆" : "🚌";
       const name = item.airline || item.train_name || item.operator_name || "Option";
       const dep = item.departure_time || "—";
-      const arr = item.arrival_time || "—";
       const duration = item.flight_type || item.travel_time_hours || item.duration_hours || "";
       const price = item.price_inr || item.estimated_price_inr || 0;
+
+      // ⚠️ Compute arrival if missing
+      let arr = item.arrival_time || "";
+      if (!arr && duration && dep !== "—") {
+        arr = computeArrival(dep, duration);
+      }
+      if (!arr) arr = "—";
 
       return `
         <div class="item-card">
@@ -223,6 +263,29 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       `;
     }).join("");
+  }
+
+  // ⚠️ NEW: Compute arrival time from departure + duration
+  function computeArrival(depTime, durationStr) {
+    try {
+      const [dh, dm] = depTime.split(":").map(Number);
+      if (isNaN(dh) || isNaN(dm)) return "";
+
+      const hMatch = String(durationStr).match(/(\d+)\s*h/i);
+      const mMatch = String(durationStr).match(/(\d+)\s*m/i);
+      const totalMin = (parseInt(hMatch?.[1] || 0) * 60) + parseInt(mMatch?.[1] || 0);
+      if (totalMin <= 0) return "";
+
+      let arrMin = dh * 60 + dm + totalMin;
+      const dayOffset = Math.floor(arrMin / 1440);
+      arrMin = arrMin % 1440;
+      const arrH = Math.floor(arrMin / 60);
+      const arrM = arrMin % 60;
+      const suffix = dayOffset > 0 ? ` (+${dayOffset}d)` : "";
+      return `${String(arrH).padStart(2, "0")}:${String(arrM).padStart(2, "0")}${suffix}`;
+    } catch {
+      return "";
+    }
   }
 
   function parseTransit(rawJson, key) {
@@ -284,7 +347,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  ITINERARY — Markdown → HTML (FIXED day splitting)
+  //  ITINERARY — Markdown → HTML
   // ═══════════════════════════════════════════════════════════════
   function renderMarkdownAsDays(md) {
     if (!md) return `<p style="color:#8189a8;">No itinerary generated.</p>`;
@@ -324,36 +387,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let html = escapeHtml(md);
 
-    // Headers
     html = html.replace(/^###\s+(.+)$/gm, '<h4 class="md-h">$1</h4>');
     html = html.replace(/^##\s+(.+)$/gm,  '<h4 class="md-h">$1</h4>');
     html = html.replace(/^#\s+(.+)$/gm,   '<h4 class="md-h">$1</h4>');
 
-    // Bold
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-    // ═════ TABLES ═════
+    // Tables
     html = html.replace(
       /(^\|.+\|\s*$\n^\|[-:|\s]+\|\s*$\n(?:^\|.+\|\s*$\n?)+)/gm,
       (tableBlock) => {
         const lines = tableBlock.trim().split('\n').filter(l => l.trim());
         if (lines.length < 2) return tableBlock;
-
         const headers = lines[0].split('|').filter(c => c.trim()).map(c => c.trim());
         const rows = lines.slice(2).map(row =>
           row.split('|').filter(c => c.trim()).map(c => c.trim())
         );
-
         const headerHtml = headers.map(h =>
           `<th style="text-align:left;padding:8px 10px;background:rgba(99,102,241,0.08);color:#4f46e5;font-weight:600;font-size:12px;border-bottom:1px solid rgba(99,102,241,0.15);">${h}</th>`
         ).join("");
-
         const rowsHtml = rows.map(row =>
           `<tr>${row.map(cell =>
             `<td style="padding:8px 10px;border-bottom:1px solid rgba(0,0,0,0.05);font-size:12.5px;color:#111215;">${cell}</td>`
           ).join("")}</tr>`
         ).join("");
-
         return `<table style="width:100%;border-collapse:collapse;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid rgba(99,102,241,0.15);">
           <thead><tr>${headerHtml}</tr></thead>
           <tbody>${rowsHtml}</tbody>
@@ -361,29 +418,22 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     );
 
-    // Italic (after bold)
     html = html.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
 
-    // Links
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
       '<a href="$2" target="_blank" class="md-link">$1</a>');
 
-    // Raw URLs in angle brackets <https://...>
     html = html.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g,
       '<a href="$1" target="_blank" class="md-link">$1</a>');
 
-    // Blockquote / Tip
     html = html.replace(/^&gt;\s*(.+)$/gm, '<div class="md-tip">$1</div>');
 
-    // Horizontal rule
     html = html.replace(/^\s*---+\s*$/gm, '<hr class="md-hr">');
 
-    // Bullets
     html = html.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
     html = html.replace(/(<li>[\s\S]*?<\/li>\s*)+/g,
       m => `<ul class="md-ul">${m}</ul>`);
 
-    // Paragraph splitting
     html = html.replace(/\n{2,}/g, '</p><p>');
     html = html.replace(/(?<!<\/li>|<\/ul>|<\/h4>|<\/div>|<\/p>|<\/table>)\n/g, '<br>');
 
@@ -398,25 +448,18 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  EXTRACT TOTAL — FIXED: handles bold markdown + multiple labels
+  //  EXTRACT TOTAL
   // ═══════════════════════════════════════════════════════════════
   function extractFirstINR(text) {
     if (!text) return null;
     const str = String(text);
 
-    // ⚠️ Priority 1: "TOTAL: ₹XX,XXX" — handles **TOTAL: ₹XX,XXX**
     const totalMatch = str.match(/\*{0,2}TOTAL\*{0,2}\s*[:\-]?\s*\*{0,2}\s*₹\s*([\d,]+)/i);
-    if (totalMatch) {
-      return `₹${totalMatch[1]}`;
-    }
+    if (totalMatch) return `₹${totalMatch[1]}`;
 
-    // ⚠️ Priority 2: "Grand Total", "Estimated Total", "Final Total", "Overall Total"
     const altMatch = str.match(/(?:Grand|Estimated|Final|Overall)\s+Total[:\s]*₹?\s*([\d,]+)/i);
-    if (altMatch) {
-      return `₹${altMatch[1]}`;
-    }
+    if (altMatch) return `₹${altMatch[1]}`;
 
-    // ⚠️ Priority 3: LAST ₹ amount (usually total in breakdown)
     const allMatches = [...str.matchAll(/₹\s*([\d,]+)/g)];
     if (allMatches.length === 0) return null;
 

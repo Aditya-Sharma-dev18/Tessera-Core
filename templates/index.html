@@ -11,7 +11,6 @@
 </head>
 <body>
 
-  <!-- Floating Pill Header -->
   <header class="navbar-wrapper">
     <nav class="pill-nav">
       <div class="brand">
@@ -28,20 +27,18 @@
   </header>
 
   <main class="container">
-    <!-- Hero Section -->
     <section class="hero-section">
       <span class="hero-badge">MULTI-AGENT TRAVEL ORCHESTRATION</span>
       <h1 class="hero-title">Plan trips with specialized<br />autonomous agents.</h1>
       <p class="hero-subtitle">FastMCP-powered search across flights, railways, stays, and dynamic day-wise itineraries.</p>
     </section>
 
-    <!-- Query Input Card -->
     <section class="input-card">
       <div class="input-box-wrapper">
         <textarea 
           id="userQuery" 
           rows="2" 
-          placeholder="E.g., Plan a 4-day budget trip from Delhi to Goa for 2 people next month with flights and stays under ₹35,000..."
+          placeholder="E.g., Plan a 5-day trip from Delhi to Manali for 4 people from 10 December 2026 to 14 December 2026 with flights, hotels, and complete day-wise itinerary under 40000"
         ></textarea>
         <button id="generateBtn" class="pill-submit-btn">
           <span>Run Agents</span>
@@ -53,13 +50,12 @@
 
       <div class="suggestion-pills">
         <span class="pill-label">Try:</span>
-        <button class="sample-query" data-query="Plan a 4-day trip from Delhi to Goa next month under 30k">Delhi → Goa (4 Days)</button>
-        <button class="sample-query" data-query="Find budget trains and stay from Mumbai to Manali for 5 days">Mumbai → Manali (Rail + Bus)</button>
-        <button class="sample-query" data-query="Executive 3-day trip to Dubai with direct flights from Delhi">Delhi → Dubai (3 Days)</button>
+        <button class="sample-query" data-query="Plan a 5-day trip from Delhi to Goa for 2 people from 20 November 2026 to 24 November 2026 with flights, beach resorts, and complete day-wise itinerary under 45000">Delhi → Goa (5 Days)</button>
+        <button class="sample-query" data-query="Plan a 5-day trip from Delhi to Manali for 4 people from 10 December 2026 to 14 December 2026 with flights, hotels, and complete day-wise itinerary under 40000">Delhi → Manali (5 Days)</button>
+        <button class="sample-query" data-query="Plan a 4-day trip from Mumbai to Dubai for 2 people from 5 January 2027 to 8 January 2027 with flights, luxury hotels, and complete day-wise itinerary under 150000">Mumbai → Dubai (4 Days)</button>
       </div>
     </section>
 
-    <!-- Pipeline -->
     <section id="agentPipeline" class="pipeline-section hidden">
       <div class="pipeline-header">
         <span class="mono-label">EXECUTION PIPELINE</span>
@@ -76,25 +72,24 @@
       </div>
     </section>
 
-    <!-- Results -->
     <section id="resultsSection" class="results-section hidden">
       <div class="overview-card">
         <div>
           <span class="mono-label">TRIP SUMMARY</span>
-          <h2 id="resDestination" class="summary-title">Delhi to Goa</h2>
-          <p id="resDuration" class="summary-sub">4 Days • 2 Travelers • Economy</p>
+          <h2 id="resDestination" class="summary-title">—</h2>
+          <p id="resDuration" class="summary-sub">—</p>
         </div>
         <div class="cost-box">
           <span class="mono-label">ESTIMATED TOTAL</span>
-          <span id="resTotalCost" class="cost-amount">₹28,450</span>
+          <span id="resTotalCost" class="cost-amount">—</span>
         </div>
       </div>
 
       <div class="results-grid">
         <div class="sub-card">
           <div class="card-head">
-            <h3>Transit Options (FastMCP)</h3>
-            <span class="badge-tag" id="transitTypeBadge">Flights</span>
+            <h3>Transit Options</h3>
+            <span class="badge-tag" id="transitTypeBadge">—</span>
           </div>
           <div id="transitOptionsList" class="item-list"></div>
         </div>

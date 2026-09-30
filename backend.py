@@ -14,10 +14,13 @@ if PROJECT_ROOT not in sys.path:
 # ═══════════════════════════════════════════════════════════════════════════
 import os
 import uuid
+import json
 import certifi
 import asyncio
 import operator
 import psycopg
+from functools import lru_cache
+from typing import TypedDict, Literal, Annotated, Optional, List, Any
 
 from langgraph.types import Command, interrupt
 from langgraph.graph import StateGraph, START, END
@@ -27,7 +30,6 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AnyMessage
 
 from dotenv import load_dotenv
-from typing import TypedDict, Literal, Annotated, Optional, List, Any
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
@@ -61,9 +63,9 @@ def get_database_url():
 #  🧠  LLM MODELS
 # ═══════════════════════════════════════════════════════════════════════════
 guardrails_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
-supervisor_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
-budget_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
-iterinary_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+supervisor_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)   # ⚠️ 20b for speed
+budget_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)       # ⚠️ 20b for speed
+iterinary_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)   # keep 120b for quality
 final_agent_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 parsing_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 
@@ -95,47 +97,10 @@ class TravelState(TypedDict):
 # ═══════════════════════════════════════════════════════════════════════════
 #  🛠️  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
-CITY_TO_RAIL_CODE = {
-    "delhi": "NDLS", "new delhi": "NDLS", "ncr": "NDLS",
-    "mumbai": "CSMT", "bombay": "CSMT",
-    "bangalore": "SBC", "bengaluru": "SBC",
-    "chennai": "MAS", "madras": "MAS",
-    "kolkata": "HWH", "calcutta": "HWH",
-    "hyderabad": "SC", "pune": "PUNE",
-    "manali": "CDG", "chandigarh": "CDG",
-    "goa": "MAO", "panaji": "MAO",
-    "jaipur": "JP", "jodhpur": "JU", "udaipur": "UDZ",
-    "agra": "AGC", "varanasi": "BSB",
-    "amritsar": "ASR", "lucknow": "LKO",
-    "shimla": "SML", "dehradun": "DDN",
-    "haridwar": "HW", "rishikesh": "RKSH",
-}
-
-CITY_TO_IATA = {
-    "delhi": "DEL", "new delhi": "DEL",
-    "mumbai": "BOM", "bombay": "BOM",
-    "bangalore": "BLR", "bengaluru": "BLR",
-    "chennai": "MAA", "kolkata": "CCU",
-    "hyderabad": "HYD", "pune": "PNQ",
-    "goa": "GOI", "panaji": "GOI",
-    "jaipur": "JAI", "manali": "KUU",
-    "chandigarh": "IXC", "amritsar": "ATQ",
-    "kochi": "COK", "cochin": "COK",
-    "ahmedabad": "AMD", "lucknow": "LKO",
-    "varanasi": "VNS", "srinagar": "SXR",
-    "leh": "IXL", "ladakh": "IXL",
-    "dubai": "DXB", "singapore": "SIN",
-    "bangkok": "BKK", "maldives": "MLE",
-    "male": "MLE", "colombo": "CMB",
-    "kathmandu": "KTM",
-}
-
-
 def _safe_constraints(state: TravelState) -> dict:
     """Return constraints as dict — handle string, dict, or missing."""
     constraints = state.get("trip_constraints", {})
     if isinstance(constraints, str):
-        import json
         try:
             constraints = json.loads(constraints)
         except Exception:
@@ -145,24 +110,153 @@ def _safe_constraints(state: TravelState) -> dict:
     return constraints
 
 
-def _to_rail_code(value: str, default: str = "NDLS") -> str:
-    """Convert city name OR station code to 4-letter IRCTC code."""
-    if not value:
-        return default
-    v = str(value).strip()
-    if len(v) == 4 and v.isalpha():
-        return v.upper()
-    return CITY_TO_RAIL_CODE.get(v.lower(), default)
+# ═══════════════════════════════════════════════════════════════════════════
+#  🌍  DYNAMIC IATA / RAIL CODE RESOLVER (LLM + Cache)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_CITY_SEED = {
+    # India metros
+    "delhi": "DEL", "new delhi": "DEL", "mumbai": "BOM", "bombay": "BOM",
+    "bangalore": "BLR", "bengaluru": "BLR", "chennai": "MAA", "kolkata": "CCU",
+    "hyderabad": "HYD", "pune": "PNQ", "ahmedabad": "AMD",
+    # India leisure
+    "goa": "GOI", "jaipur": "JAI", "kochi": "COK", "cochin": "COK",
+    "varanasi": "VNS", "lucknow": "LKO", "amritsar": "ATQ",
+    "kashmir": "SXR", "srinagar": "SXR", "jammu": "IXJ",
+    "leh": "IXL", "ladakh": "IXL", "shimla": "SLV",
+    "manali": "KUU", "dehradun": "DED", "chandigarh": "IXC",
+    "udaipur": "UDR", "jodhpur": "JDH", "bhopal": "BHO",
+    # International
+    "dubai": "DXB", "singapore": "SIN", "bangkok": "BKK",
+    "maldives": "MLE", "male": "MLE", "colombo": "CMB",
+    "kathmandu": "KTM", "london": "LHR", "paris": "CDG",
+    "new york": "JFK", "tokyo": "NRT", "sydney": "SYD",
+}
+
+# ⚠️ Region → main city (for bus/rail resolution)
+_REGION_TO_CITY = {
+    "kashmir": "Srinagar", "jammu and kashmir": "Srinagar",
+    "j&k": "Srinagar", "jammu": "Jammu",
+    "himachal": "Manali", "himachal pradesh": "Manali",
+    "kerala": "Kochi", "rajasthan": "Jaipur",
+    "goa": "Goa", "ladakh": "Leh",
+    "andaman": "Port Blair", "andaman and nicobar": "Port Blair",
+    "sikkim": "Gangtok", "meghalaya": "Shillong",
+    "northeast": "Guwahati", "tamil nadu": "Chennai",
+    "karnataka": "Bangalore", "maharashtra": "Mumbai",
+    "gujarat": "Ahmedabad", "west bengal": "Kolkata",
+}
+
+_city_cache = {}
+
+
+def _resolve_iata_via_llm(city: str) -> Optional[str]:
+    """Ask LLM to resolve city → IATA code."""
+    try:
+        prompt = f"""What is the main airport IATA code for "{city}"?
+
+Rules:
+- Return ONLY the 3-letter IATA code (e.g., "DEL", "BOM")
+- If city has multiple airports, return the MAIN international one
+- If city is a REGION (like "Kashmir"), return the main city's airport (Srinagar → SXR)
+- If not resolvable, return "UNKNOWN"
+
+Answer (just the 3-letter code or UNKNOWN):"""
+        response = parsing_model.invoke(prompt)
+        code = response.content.strip().upper().strip('"').strip("'")
+        if len(code) == 3 and code.isalpha():
+            return code
+        return None
+    except Exception as e:
+        print(f"⚠️ LLM IATA resolution failed for '{city}': {e}")
+        return None
+
+
+def _resolve_rail_via_llm(city: str) -> Optional[str]:
+    """Ask LLM to resolve city → Indian Railways station code."""
+    try:
+        prompt = f"""What is the main Indian Railways station code for "{city}"?
+
+Rules:
+- Return ONLY the station code (e.g., "NDLS", "CSMT", "SBC")
+- If city has multiple stations, return the MAIN one
+- If city has NO railway station, return the NEAREST major railhead
+- If not in India, return "NONE"
+
+Answer (just the code or NONE):"""
+        response = parsing_model.invoke(prompt)
+        code = response.content.strip().upper().strip('"').strip("'")
+        if 2 <= len(code) <= 5 and code.isalpha():
+            return code
+        return None
+    except Exception as e:
+        print(f"⚠️ LLM rail resolution failed for '{city}': {e}")
+        return None
 
 
 def _to_iata(value: str, default: str = "DEL") -> str:
-    """Convert city name OR IATA to 3-letter IATA code."""
+    """City/region → IATA code with LLM fallback + caching."""
     if not value:
         return default
     v = str(value).strip()
     if len(v) == 3 and v.isalpha():
         return v.upper()
-    return CITY_TO_IATA.get(v.lower(), default)
+    v_lower = v.lower()
+    if v_lower in _CITY_SEED:
+        return _CITY_SEED[v_lower]
+    if v_lower in _city_cache:
+        return _city_cache[v_lower] or default
+    for city_key, code in _CITY_SEED.items():
+        if city_key in v_lower or v_lower in city_key:
+            _city_cache[v_lower] = code
+            return code
+    print(f"🔍 Resolving IATA for '{v}' via LLM...")
+    code = _resolve_iata_via_llm(v)
+    if code:
+        _city_cache[v_lower] = code
+        print(f"✅ Resolved '{v}' → {code}")
+        return code
+    _city_cache[v_lower] = None
+    print(f"❌ Could not resolve '{v}' — using default {default}")
+    return default
+
+
+def _to_rail_code(value: str, default: str = "NDLS") -> str:
+    """City → Indian Railways code with LLM fallback + caching."""
+    if not value:
+        return default
+    v = str(value).strip()
+    if 2 <= len(v) <= 5 and v.isalpha():
+        return v.upper()
+    v_lower = v.lower()
+    if f"rail_{v_lower}" in _city_cache:
+        return _city_cache.get(f"rail_{v_lower}") or default
+    print(f"🔍 Resolving rail code for '{v}' via LLM...")
+    code = _resolve_rail_via_llm(v)
+    if code:
+        _city_cache[f"rail_{v_lower}"] = code
+        print(f"✅ Resolved '{v}' → {code}")
+        return code
+    _city_cache[f"rail_{v_lower}"] = None
+    print(f"❌ Could not resolve rail for '{v}' — using default {default}")
+    return default
+
+
+def _resolve_region_to_city(value: str) -> str:
+    """Region → main city name (for bus search)."""
+    r = str(value).strip().lower()
+    return _REGION_TO_CITY.get(r, str(value).strip())
+
+
+def _min_price_from_text(text: str) -> int:
+    """Extract cheapest ₹ amount from any text."""
+    import re
+    if not text:
+        return 0
+    prices = re.findall(r'₹\s*([\d,]+)', str(text))
+    if not prices:
+        return 0
+    return min(int(p.replace(",", "")) for p in prices)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -225,8 +319,8 @@ def blocked_request_node(state: TravelState) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 #  🎯  SUPERVISOR
 # ═══════════════════════════════════════════════════════════════════════════
-KNOWN_AGENTS = ["flight_agent", "rail_agent", "bus_agent", "hotel_agent",
-                "weather_agent", "budget_agent", "itinerary_agent"]
+KNOWN_AGENTS = ["flight_agent", "hotel_agent", "weather_agent",
+                "budget_agent", "itinerary_agent"]
 
 
 class SupervisorOutput(BaseModel):
@@ -242,22 +336,22 @@ def supervisor_agent(state: TravelState) -> dict:
 Available specialist agents: {KNOWN_AGENTS}
 
 CRITICAL ROUTING RULES:
-- User mentions "trains"/"railways"/"IRCTC" → MUST include "rail_agent"
-- User mentions "buses"/"bus" → MUST include "bus_agent"
-- User mentions "flights"/"air" → MUST include "flight_agent"
-- User mentions "hotels"/"stays" → MUST include "hotel_agent"
-- User mentions weather/climate → include "weather_agent"
+- Mention of "flights"/"air"/"travel" → include "flight_agent" (handles fallback to train/bus automatically)
+- Mention of "trains"/"railways"/"bus"/"road" → still include "flight_agent" (it tries all modes)
+- Mention of "hotels"/"stays"/"accommodation" → include "hotel_agent"
+- Mention of weather/climate/packing → include "weather_agent"
 - ALWAYS include "budget_agent" and "itinerary_agent"
+- DEFAULT: include "flight_agent", "hotel_agent", "budget_agent", "itinerary_agent"
 
 For query: "{query}"
 
 Return:
-- selected_agents: comma-separated string like "flight_agent, hotel_agent, itinerary_agent"
-- trip_constraints: JSON string like {{"origin": "Delhi", "destination": "Manali", "travelers": 3, "duration_days": 5, "budget": 60000}}
+- selected_agents: comma-separated string
+- trip_constraints: JSON string like {{"origin": "Delhi", "destination": "Kashmir", "travelers": 2, "duration_days": 4, "budget": 12000, "departure_date": "2026-12-15", "return_date": "2026-12-18"}}
 - reasoning: short explanation
 """
 
-    agents = ["flight_agent", "hotel_agent", "itinerary_agent"]
+    agents = ["flight_agent", "hotel_agent", "budget_agent", "itinerary_agent"]
     constraints = {"raw_query": query}
     reasoning = "Default routing"
 
@@ -279,12 +373,13 @@ Return:
         agents = [a for a in raw_agents if a in KNOWN_AGENTS]
         if "itinerary_agent" not in agents:
             agents.append("itinerary_agent")
+        if "flight_agent" not in agents:
+            agents.append("flight_agent")   # ⚠️ Always add flight (handles fallback)
 
         raw_c = result.trip_constraints
         if isinstance(raw_c, dict):
             constraints = raw_c
         elif isinstance(raw_c, str):
-            import json
             try:
                 constraints = json.loads(raw_c)
             except Exception:
@@ -297,7 +392,7 @@ Return:
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        agents = ["flight_agent", "hotel_agent", "itinerary_agent"]
+        agents = ["flight_agent", "hotel_agent", "budget_agent", "itinerary_agent"]
         constraints = {"raw_query": query}
         reasoning = f"Fallback: {exc}"
 
@@ -310,80 +405,120 @@ Return:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ✈️  FLIGHT AGENT
+#  ✈️  TRANSPORT AGENT (Flight → Train → Bus fallback)
 # ═══════════════════════════════════════════════════════════════════════════
 def flight_agent(state: TravelState) -> dict:
+    """Unified transport: try Flight → Train → Bus."""
     if "flight_agent" not in state.get("selected_agents", []):
         return {}
-    c = _safe_constraints(state)
-    origin = _to_iata(c.get("origin_iata") or c.get("origin", "DEL"), "DEL")
-    destination = _to_iata(c.get("destination_iata") or c.get("destination", "BOM"), "BOM")
-    date = c.get("travel_date", "2026-10-15")
-    try:
-        results = search_flights.invoke({
-            "origin_iata": origin,
-            "destination_iata": destination,
-            "travel_date": date
-        })
-    except Exception as e:
-        results = f"Flight lookup error: {str(e)}"
-    return {"flight_results": str(results)}
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  🚆  RAIL AGENT
-# ═══════════════════════════════════════════════════════════════════════════
-def rail_agent(state: TravelState) -> dict:
-    if "rail_agent" not in state.get("selected_agents", []):
-        return {}
     c = _safe_constraints(state)
-    from_stn = _to_rail_code(c.get("from_station") or c.get("origin", "NDLS"), "NDLS")
-    to_stn = _to_rail_code(c.get("to_station") or c.get("destination", "CNB"), "CNB")
-    date = c.get("travel_date", "2026-10-15")
-    
+    origin_raw = c.get("origin_iata") or c.get("origin") or c.get("from") or "Delhi"
+    dest_raw = c.get("destination_iata") or c.get("destination") or c.get("to") or ""
+    date = c.get("departure_date") or c.get("travel_date") or "2026-12-15"
+
+    # Resolve codes
+    origin_iata = _to_iata(origin_raw, "DEL")
+    dest_iata = _to_iata(dest_raw, "DEL")
+
+    # Smart rail default
+    dest_lower = str(dest_raw).lower()
+    rail_default_to = "SXR" if ("kashmir" in dest_lower or "srinagar" in dest_lower) else "NDLS"
+    from_stn = _to_rail_code(origin_raw, "NDLS")
+    to_stn = _to_rail_code(dest_raw, rail_default_to)
+
+    # Region → city for buses
+    origin_city = _resolve_region_to_city(origin_raw)
+    dest_city = _resolve_region_to_city(dest_raw)
+
+    flight_err = train_err = bus_err = None
+
+    print(f"\n🚀 Transport chain: {origin_raw} → {dest_raw}")
+    print(f"   IATA: {origin_iata} → {dest_iata}")
+    print(f"   Rail: {from_stn} → {to_stn}")
+    print(f"   Bus:  {origin_city} → {dest_city}")
+
+    # ─── 1. FLIGHTS ───
+        # ─── 1. FLIGHTS ───
+    if dest_iata != origin_iata:
+        try:
+            result = search_flights.invoke({
+                "origin_iata": origin_iata,
+                "destination_iata": dest_iata,
+                "travel_date": date
+            })
+            rs = str(result)
+            
+            # ⚠️ SANITY: Check if flights are realistic
+            import re
+            prices = re.findall(r'"price_inr":\s*([\d.]+)', rs)
+            
+            if '"recommended_flights": [' in rs and '"total_found": 0' not in rs:
+                if prices:
+                    min_price = min(float(p) for p in prices)
+                    
+                    # Domestic India routes should be < ₹20,000
+                    is_domestic = (
+                        origin_iata not in ["DXB", "SIN", "BKK", "LHR", "CDG", "JFK", "NRT", "SYD", "MLE", "CMB", "KTM"] and
+                        dest_iata not in ["DXB", "SIN", "BKK", "LHR", "CDG", "JFK", "NRT", "SYD", "MLE", "CMB", "KTM"]
+                    )
+                    
+                    if is_domestic and min_price > 20000:
+                        flight_err = f"Flights too expensive (₹{min_price:,.0f}) — likely connecting. Skipping to train/bus."
+                        print(f"⚠️ {flight_err}")
+                        # Fall through to train
+                    else:
+                        print(f"✅ Flights found (cheapest ₹{min_price:,.0f})")
+                        return {"flight_results": rs}
+                else:
+                    print(f"✅ Flights found (no price data)")
+                    return {"flight_results": rs}
+            else:
+                flight_err = f"No flights for {origin_iata} → {dest_iata}"
+        except Exception as e:
+            flight_err = f"Flight error: {e}"
+
+    # ─── 2. TRAINS ───
     try:
-        results = search_trains.invoke({
+        result = search_trains.invoke({
             "from_station_code": from_stn,
             "to_station_code": to_stn,
             "travel_date": date
         })
+        rs = str(result)
+        if '"trains": [' in rs and '"total_trains": 0' not in rs:
+            print(f"✅ Trains found")
+            return {"rails_results": rs}
+        train_err = f"No trains for {from_stn} → {to_stn}"
     except Exception as e:
-        results = f"Rail lookup error: {str(e)}"
-    
-    # ⚠️ Fallback: agar empty ya koi train nahi mili
-    result_str = str(results).strip()
-    if (not result_str 
-        or "No direct trains" in result_str 
-        or '"trains": []' in result_str
-        or len(result_str) < 100):
-        results = (
-            f"No direct trains found for {from_stn} → {to_stn} on {date}. "
-            f"Nearest railhead: Chandigarh (CDG). "
-            f"Suggested route: Delhi (NDLS) → Chandigarh (CDG) by train, "
-            f"then CDG → Manali by bus (~10 hrs)."
-        )
-    
-    return {"rails_results": result_str if len(result_str) >= 100 else str(results)}
+        train_err = f"Train error: {e}"
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  🚌  BUS AGENT
-# ═══════════════════════════════════════════════════════════════════════════
-def bus_agent(state: TravelState) -> dict:
-    if "bus_agent" not in state.get("selected_agents", []):
-        return {}
-    c = _safe_constraints(state)
-    origin = c.get("origin_city") or c.get("origin", "Delhi")
-    dest = c.get("destination_city") or c.get("destination", "Manali")
-    date = c.get("travel_date", "2026-10-15")
+    print(f"⚠️ {train_err} — trying BUSES")
+
+    # ─── 3. BUSES ───
     try:
-        results = search_buses.invoke({
-            "origin_city": origin,
-            "destination_city": dest,
+        result = search_buses.invoke({
+            "origin_city": origin_city,
+            "destination_city": dest_city,
             "travel_date": date
         })
+        rs = str(result)
+        if '"recommended_buses": [' in rs and '"total_found": 0' not in rs:
+            print(f"✅ Buses found: {origin_city} → {dest_city}")
+            return {"bus_results": rs}
+        bus_err = f"No buses for {origin_city} → {dest_city}"
     except Exception as e:
-        results = f"Bus lookup error: {str(e)}"
-    return {"bus_results": str(results)}
+        bus_err = f"Bus error: {e}"
+
+    print(f"❌ All transport modes failed")
+    return {
+        "flight_results": (
+            f"⚠️ No transport found for {origin_raw} → {dest_raw}.\n"
+            f"- Flight: {flight_err}\n"
+            f"- Train: {train_err}\n"
+            f"- Bus: {bus_err}"
+        )
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -394,6 +529,8 @@ def hotel_agent(state: TravelState) -> dict:
         return {}
     c = _safe_constraints(state)
     destination = c.get("destination", "Goa")
+    # Convert region → city for better hotel search
+    destination = _resolve_region_to_city(destination)
     budget = c.get("budget_tier", "moderate")
     if isinstance(budget, (int, float)):
         budget = "luxury" if budget > 15000 else "budget" if budget < 5000 else "moderate"
@@ -414,7 +551,7 @@ def weather_agent(state: TravelState) -> dict:
     if "weather_agent" not in state.get("selected_agents", []):
         return {}
     c = _safe_constraints(state)
-    destination = c.get("destination", "Goa")
+    destination = _resolve_region_to_city(c.get("destination", "Goa"))
     try:
         results = get_weather.invoke({"city": destination})
     except Exception as e:
@@ -423,88 +560,83 @@ def weather_agent(state: TravelState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  💰  BUDGET AGENT
+#  💰  BUDGET AGENT (Pure Python — No LLM)
 # ═══════════════════════════════════════════════════════════════════════════
 def budget_agent(state: TravelState) -> dict:
+    """Budget calculation — pure Python, ~0.1s."""
+    import re
     c = _safe_constraints(state)
     budget_limit = c.get("budget", "Not Specified")
     duration = c.get("duration_days") or c.get("days") or c.get("duration") or 5
     travelers = c.get("travelers") or c.get("people") or c.get("passengers") or 2
     origin = c.get("origin", "Origin")
     destination = c.get("destination", "Destination")
-    
-    # Compute nights
+
     try:
         total_days = int(duration)
         nights = max(1, total_days - 1)
     except:
         total_days = 5
         nights = 4
-    
     try:
         total_travelers = int(travelers)
     except:
         total_travelers = 2
-
-    # Gather ALL transit data
-    transit_parts = []
-    if state.get("flight_results"):
-        transit_parts.append(f"FLIGHTS:\n{str(state['flight_results'])[:800]}")
-    if state.get("rails_results"):
-        transit_parts.append(f"TRAINS:\n{str(state['rails_results'])[:600]}")
-    if state.get("bus_results"):
-        transit_parts.append(f"BUSES:\n{str(state['bus_results'])[:600]}")
-    
-    transit_info = "\n\n".join(transit_parts) if transit_parts else "No transit data"
-    hotel_info = str(state.get("hotel_results", ""))[:800]
-
-    prompt = f"""
-You are a Travel Budget Specialist. Return a SIMPLE breakdown.
-
-TRIP:
-- Route: {origin} → {destination}
-- Duration: {total_days} days / {nights} nights
-- Travelers: {total_travelers}
-- Target: ₹{budget_limit}
-
-TRANSIT (use the CHEAPEST single option, round-trip):
-{transit_info}
-
-HOTELS (pick cheapest, use per-night rate):
-{hotel_info}
-
-RULES:
-1. Transit: Take the CHEAPEST per-person fare. Multiply by {total_travelers} × 2 (round-trip only).
-2. Accommodation: Cheapest hotel rate × {nights} nights × {max(1, (total_travelers + 1) // 2)} rooms.
-3. Food: ₹600 per person per day × {total_days} days × {total_travelers}.
-4. Local transport: ₹500 per person per day × {total_days} days × {total_travelers}.
-5. Activities: ₹500 per person × {total_travelers}.
-
-DO NOT multiply flights by number of flights shown. Use the CHEAPEST one.
-DO NOT include multiple transport modes. Pick ONE.
-
-Respond with ONLY these lines (no explanation):
-
-**Breakdown:**
-- Transit: ₹X
-- Accommodation: ₹Y
-- Food: ₹Z
-- Local Transport: ₹A
-- Activities: ₹B
-
-**TOTAL: ₹(X+Y+Z+A+B)**
-
-**Budget check:** [Within/Over] ₹{budget_limit}
-"""
     try:
-        result = budget_model.invoke(prompt)
-        print(f"💰 Budget LLM output:\n{result.content}\n")
-        return {"budget_results": result.content}
-    except Exception as e:
-        import traceback
-        print("❌ Budget agent failed:")
-        traceback.print_exc()
-        return {"budget_results": f"Budget calculation failed: {str(e)}"}
+        budget_num = int(str(budget_limit).replace(",", "").replace("₹", "").strip())
+    except:
+        budget_num = 0
+
+    rooms = max(1, (total_travelers + 1) // 2)
+
+    # ─── Cheapest transit from all sources ───
+    flight_min = _min_price_from_text(state.get("flight_results", ""))
+    train_min = _min_price_from_text(state.get("rails_results", ""))
+    bus_min = _min_price_from_text(state.get("bus_results", ""))
+
+    transit_price = 0
+    transit_mode = "N/A"
+    for price, mode in [(bus_min, "bus"), (train_min, "train"), (flight_min, "flight")]:
+        if price > 0:
+            transit_price = price
+            transit_mode = mode
+            break
+
+    # ─── Cheapest hotel ───
+    hotel_info = str(state.get("hotel_results", ""))
+    hotel_prices = re.findall(r'₹\s*([\d,]+)\s*/night', hotel_info)
+    if not hotel_prices:
+        hotel_prices = re.findall(r'"price_per_night":\s*(\d+)', hotel_info)
+    if not hotel_prices:
+        hotel_prices = re.findall(r'₹\s*([\d,]+)', hotel_info)
+
+    hotel_price = min((int(p.replace(",", "")) for p in hotel_prices), default=1500)
+
+    # ─── Compute ───
+    transit_cost = transit_price * total_travelers * 2
+    hotel_cost = hotel_price * nights * rooms
+    food_cost = 500 * total_days * total_travelers
+    local_cost = 300 * total_days * total_travelers
+    act_cost = 300 * total_travelers
+    total = transit_cost + hotel_cost + food_cost + local_cost + act_cost
+
+    within = "Within" if budget_num > 0 and total <= budget_num else "OVER"
+
+    result = f"""**Breakdown:**
+- Transit ({transit_mode}, round-trip): ₹{transit_cost:,}
+- Accommodation ({nights} nights × {rooms} rooms): ₹{hotel_cost:,}
+- Food ({total_days} days): ₹{food_cost:,}
+- Local Transport: ₹{local_cost:,}
+- Activities: ₹{act_cost:,}
+
+**TOTAL: ₹{total:,}**
+
+**Budget check:** {within} ₹{budget_num:,}
+"""
+    if within == "OVER" and budget_num > 0:
+        result += f"\n⚠️ Minimum required: ₹{total:,}. Consider increasing budget or reducing duration."
+
+    return {"budget_results": result}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -520,69 +652,68 @@ def iternary_agent(state: TravelState) -> dict:
     weather = state.get("weather_results", "")
     budget = state.get("budget_results", "")
     selected = state.get("selected_agents", [])
+    budget_limit = c.get("budget", "Not Specified")
 
-    # Determine which transport modes are actually available
+    # Detect available transport modes
     transport_available = []
-    if flights and flights.strip():
+    if flights and str(flights).strip() and "No transport found" not in str(flights)[:100] and "recommended_flights" in str(flights):
         transport_available.append("FLIGHTS")
-    if trains and trains.strip():
+    if trains and str(trains).strip() and "No direct trains" not in str(trains)[:100] and '"trains"' in str(trains):
         transport_available.append("TRAINS")
-    if buses and buses.strip():
+    if buses and str(buses).strip() and "No transport found" not in str(buses)[:100] and "recommended_buses" in str(buses):
         transport_available.append("BUSES")
-    
+
     if not transport_available:
-        transport_available = ["NONE — use generic suggestions"]
+        transport_available = ["NONE"]
 
     prompt = f"""You are the Itinerary Architect Agent. Generate a day-by-day travel plan.
+
+⚠️ BUDGET CONSTRAINT: User's hard budget is ₹{budget_limit}.
+- If the cheapest total exceeds this, EXPLICITLY state "This trip requires at least ₹X,XXX" in the first line.
+- Pick the CHEAPEST valid transport and hotel.
+- Do NOT suggest luxury activities if budget is tight.
 
 User Query: {query}
 Trip Constraints: {c}
 
-SELECTED AGENTS (this is what ran): {selected}
 AVAILABLE TRANSPORT MODES: {', '.join(transport_available)}
 
 RESEARCH DATA:
-- Flights: {str(flights)[:500] if flights else 'NONE AVAILABLE'}
-- Trains: {str(trains)[:500] if trains else 'NONE AVAILABLE'}
-- Buses: {str(buses)[:500] if buses else 'NONE AVAILABLE'}
-- Hotels: {str(hotels)[:600] if hotels else 'NONE AVAILABLE'}
+- Flights: {str(flights)[:500] if flights else 'NONE'}
+- Trains: {str(trains)[:500] if trains else 'NONE'}
+- Buses: {str(buses)[:500] if buses else 'NONE'}
+- Hotels: {str(hotels)[:600] if hotels else 'NONE'}
 - Weather: {str(weather)[:250] if weather else 'NONE'}
 - Budget: {str(budget)[:400] if budget else 'NONE'}
 
 ═══ CRITICAL RULES ═══
 
 1. TRANSPORTATION:
-   - Use ONLY the transport modes listed in AVAILABLE TRANSPORT MODES above.
-   - If "FLIGHTS" is available → pick the CHEAPEST flight from data, use it for arrival AND departure.
-   - If "BUSES" is available → pick the CHEAPEST bus operator, use it for arrival AND departure.
-   - If "TRAINS" is available → pick the CHEAPEST train, use it for arrival AND departure.
-   - If MULTIPLE modes available → pick ONE MODE ONLY (prefer cheapest overall).
-   - NEVER invent transport that's not in the data.
-   - NEVER mention "bus" if buses data is empty.
-   - NEVER mention "flight" if flights data is empty.
-   - NEVER mention "train" if trains data is empty.
+   - Use ONLY the transport modes listed in AVAILABLE TRANSPORT MODES.
+   - If "FLIGHTS" available → pick CHEAPEST flight.
+   - If "BUSES" available → pick CHEAPEST bus operator.
+   - If "TRAINS" available → pick CHEAPEST train.
+   - If MULTIPLE modes → pick ONE (cheapest).
+   - NEVER invent transport that's not in data.
 
 2. HOTELS:
-   - Use ONLY hotel names from Hotels data above.
-   - Pick ONE hotel for the entire stay (prefer mid-range or as per budget).
-   - Do NOT invent hotel names.
+   - Use ONLY hotel names from Hotels data.
+   - Pick ONE hotel for entire stay (prefer cheapest for tight budgets).
 
-3. BUDGET CONSISTENCY:
-   - Total trip cost MUST match the Budget data above.
-   - Do NOT suggest activities that exceed the user's budget.
+3. BUDGET:
+   - Total cost MUST match Budget data.
 
 4. FORMAT (strict):
    - Each day: "## Day N — Title"
-   - Under each day, use EXACTLY these 4 bullets:
+   - Under each day, EXACTLY 4 bullets:
      * **Morning**: [activity]
      * **Afternoon**: [activity]
      * **Evening**: [activity]
-     * **Stay**: [hotel name from data]
+     * **Stay**: [hotel name]
 
-5. Include a final section:
-   "## Practical Tips" with weather-based packing suggestions.
+5. Include: "## Practical Tips" with weather-based suggestions.
 
-Start Day 1 with the actual transport mode you chose (state flight number/bus operator explicitly).
+Start Day 1 with the actual transport mode (state flight number/bus operator explicitly).
 """
     response = iterinary_model.invoke(prompt)
     return {
@@ -659,8 +790,7 @@ def revise_itinerary_node(state: TravelState) -> dict:
     itinerary = state.get("itinerary", "")
     feedback = state.get("human_feedback", "")
 
-    prompt = f"""
-You are the Itinerary Architect Agent. Revise the existing itinerary based on human feedback.
+    prompt = f"""You are the Itinerary Architect Agent. Revise the itinerary based on human feedback.
 
 Original Query: {query}
 Constraints: {c}
@@ -668,11 +798,11 @@ Constraints: {c}
 Current Itinerary:
 {itinerary}
 
-Feedback to Apply:
+Feedback:
 {feedback}
 
 Regenerate the full day-by-day itinerary incorporating the feedback.
-Keep the Markdown structure and format each day as "## Day N — Title".
+Keep format "## Day N — Title" with Morning/Afternoon/Evening/Stay bullets.
 """
     response = iterinary_model.invoke(prompt)
     return {
@@ -707,14 +837,13 @@ def final_agent(state: TravelState) -> dict:
     buses = state.get("bus_results", "")
     hotels = state.get("hotel_results", "")
 
-    prompt = f"""
-You are the Final Response Agent for the Tessera Travel Engine.
+    prompt = f"""You are the Final Response Agent for the Tessera Travel Engine.
 Compose a single polished user-facing answer:
 
-1. Warm summary of the trip
-2. Approved day-by-day itinerary (keep Markdown)
-3. "Budget Snapshot" section (₹ breakdown)
-4. "Getting There" section (transit picks with links)
+1. Warm summary
+2. Approved day-by-day itinerary (Markdown)
+3. "Budget Snapshot" section
+4. "Getting There" section (transit with links)
 5. "Where to Stay" section
 6. "Weather & Packing" section
 7. Short "Next Steps" note
@@ -750,20 +879,30 @@ DATABASE_URL = get_database_url()
 
 _pool = AsyncConnectionPool(
     conninfo=DATABASE_URL,
-    max_size=20,
-    min_size=2,
-    kwargs={"autocommit": True, "row_factory": dict_row},
+    max_size=5,
+    min_size=0,
+    max_idle=30,
+    max_lifetime=300,
+    timeout=30,
+    kwargs={
+        "autocommit": True,
+        "row_factory": dict_row,
+        "prepare_threshold": None,
+        "keepalives": 1,
+        "keepalives_idle": 15,
+        "keepalives_interval": 5,
+        "keepalives_count": 3,
+    },
     open=False,
+    check=AsyncConnectionPool.check_connection,
 )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  🎛️  ROUTER — with fallback to NEXT agent (not budget)
+#  🎛️  ROUTER
 # ═══════════════════════════════════════════════════════════════════════════
 def should_run(agent_name: str, fallback: str = "budget_agent"):
-    """
-    Router: if agent selected → run it; else → go to fallback (next agent).
-    """
+    """Router: if agent selected → run it; else → go to fallback."""
     def router(state: TravelState) -> str:
         selected = state.get("selected_agents", [])
         return agent_name if agent_name in selected else fallback
@@ -780,9 +919,7 @@ async def build_graph():
     workflow.add_node("guardrails_node", guardrails_node)
     workflow.add_node("blocked_request_node", blocked_request_node)
     workflow.add_node("supervisor_agent", supervisor_agent)
-    workflow.add_node("flight_agent", flight_agent)
-    workflow.add_node("rail_agent", rail_agent)
-    workflow.add_node("bus_agent", bus_agent)
+    workflow.add_node("flight_agent", flight_agent)          # unified transport
     workflow.add_node("hotel_agent", hotel_agent)
     workflow.add_node("weather_agent", weather_agent)
     workflow.add_node("budget_agent", budget_agent)
@@ -801,24 +938,14 @@ async def build_graph():
     )
     workflow.add_edge("blocked_request_node", END)
 
-    # ----- Sequential chain with smart skip (fallback = next agent) -----
+    # ----- Supervisor → Transport → Hotel → Weather → Budget → Itinerary -----
     workflow.add_conditional_edges(
         "supervisor_agent",
-        should_run("flight_agent", fallback="rail_agent"),
-        {"flight_agent": "flight_agent", "rail_agent": "rail_agent"}
+        should_run("flight_agent", fallback="hotel_agent"),
+        {"flight_agent": "flight_agent", "hotel_agent": "hotel_agent"}
     )
     workflow.add_conditional_edges(
         "flight_agent",
-        should_run("rail_agent", fallback="bus_agent"),
-        {"rail_agent": "rail_agent", "bus_agent": "bus_agent"}
-    )
-    workflow.add_conditional_edges(
-        "rail_agent",
-        should_run("bus_agent", fallback="hotel_agent"),
-        {"bus_agent": "bus_agent", "hotel_agent": "hotel_agent"}
-    )
-    workflow.add_conditional_edges(
-        "bus_agent",
         should_run("hotel_agent", fallback="weather_agent"),
         {"hotel_agent": "hotel_agent", "weather_agent": "weather_agent"}
     )
@@ -828,10 +955,7 @@ async def build_graph():
         {"weather_agent": "weather_agent", "budget_agent": "budget_agent"}
     )
 
-    # ----- Weather → Budget -----
     workflow.add_edge("weather_agent", "budget_agent")
-
-    # ----- Budget → Itinerary → HITL -----
     workflow.add_edge("budget_agent", "itinerary_agent")
     workflow.add_edge("itinerary_agent", "human_approval_node")
 

@@ -46,7 +46,26 @@ def _parse_time_tuple(time_obj) -> str:
 
 
 # ==========================================
-# 3. LangChain Agent Tool
+# 3. Domestic / International Detection
+# ==========================================
+# Non-Indian airport IATA codes (main international hubs)
+_INTERNATIONAL_HUBS = {
+    "DXB", "AUH", "DOH", "SIN", "BKK", "HKG", "KUL",
+    "LHR", "CDG", "FRA", "AMS", "IST", "ZRH",
+    "JFK", "EWR", "LAX", "SFO", "ORD", "YYZ",
+    "NRT", "HND", "ICN", "PEK", "PVG",
+    "SYD", "MEL", "AKL",
+    "MLE", "CMB", "KTM", "DAC", "RGN",
+}
+
+
+def _is_domestic(origin: str, dest: str) -> bool:
+    """Returns True if both airports are likely in India."""
+    return origin not in _INTERNATIONAL_HUBS and dest not in _INTERNATIONAL_HUBS
+
+
+# ==========================================
+# 4. LangChain Agent Tool
 # ==========================================
 @tool
 def search_flights(origin_iata: str, destination_iata: str, travel_date: str) -> str:
@@ -64,6 +83,7 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
     try:
         origin = origin_iata.strip().upper()
         dest = destination_iata.strip().upper()
+        domestic = _is_domestic(origin, dest)
         
         # Deep Link generate karein
         booking_link = DeepLinkGenerator.get_flight_link(origin, dest, travel_date)
@@ -88,13 +108,23 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
         
         if not raw_results:
             return json.dumps({
-                "error": f"No flights found between {origin} and {dest} on {travel_date}."
+                "origin": origin,
+                "destination": dest,
+                "travel_date": travel_date,
+                "total_found": 0,
+                "cheapest_inr": None,
+                "recommended_flights": [],
+                "message": f"No flights found between {origin} and {dest} on {travel_date}."
             })
 
         parsed_list: List[FlightLeg] = []
         prices: List[float] = []
 
-        # 3. Parse and prioritize top flights
+        # 3. Parse flights
+        # ⚠️ DOMESTIC SANITY: For domestic India routes, flight should be ≤ ₹20,000
+        # Prices higher = likely connecting international carrier data
+        max_price_threshold = 20000 if domestic else 500000
+
         for item in raw_results:
             try:
                 first_leg = item.flights[0] if (hasattr(item, "flights") and item.flights) else None
@@ -109,6 +139,12 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
                 
                 airline_name = item.airlines[0] if (hasattr(item, "airlines") and item.airlines) else item.type
                 fare = float(item.price)
+
+                # ⚠️ SKIP: Absurd prices for domestic routes
+                if domestic and fare > max_price_threshold:
+                    print(f"⚠️ Skipping absurd price ₹{fare:,.0f} for domestic {origin}→{dest}")
+                    continue
+                
                 prices.append(fare)
                 
                 num_stops = len(item.flights) - 1 if hasattr(item, "flights") else 0
@@ -132,15 +168,36 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
             except Exception:
                 continue
 
-        # Sort by price ascending
+        # ⚠️ If ALL flights were filtered out (all absurd), return empty
+        if not parsed_list:
+            return json.dumps({
+                "origin": origin,
+                "destination": dest,
+                "travel_date": travel_date,
+                "total_found": 0,
+                "cheapest_inr": None,
+                "recommended_flights": [],
+                "message": f"All flights for {origin}→{dest} were above threshold (₹{max_price_threshold:,}) — likely connecting international routes."
+            })
+
+        # 4. Sort by price ascending
         parsed_list.sort(key=lambda x: x.price_inr)
+
+        # ⚠️ SECOND-LAYER FILTER: Remove flights > 3x cheapest (outliers)
+        if parsed_list:
+            cheapest = parsed_list[0].price_inr
+            # Keep only flights within reasonable range
+            cutoff = cheapest * 3 if domestic else cheapest * 10
+            filtered_list = [f for f in parsed_list if f.price_inr <= cutoff]
+            if filtered_list:
+                parsed_list = filtered_list
 
         output = FlightSearchOutput(
             origin=origin,
             destination=dest,
             travel_date=travel_date,
             total_found=len(raw_results),
-            cheapest_inr=min(prices) if prices else None,
+            cheapest_inr=parsed_list[0].price_inr if parsed_list else None,
             recommended_flights=parsed_list[:6]
         )
 
@@ -151,7 +208,7 @@ def search_flights(origin_iata: str, destination_iata: str, travel_date: str) ->
 
 
 # ==========================================
-# 4. Standalone Test Execution
+# 5. Standalone Test Execution
 # ==========================================
 if __name__ == "__main__":
     print("Testing flight search tool directly...")
