@@ -5,8 +5,12 @@ import sys
 import asyncio
 
 if sys.platform == "win32":
+    import io
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    print("🔧 Windows SelectorEventLoop policy set")
+    print("[Tessera] Windows SelectorEventLoop policy set")
 
 import os
 
@@ -20,7 +24,7 @@ if PROJECT_ROOT not in sys.path:
 # ═══════════════════════════════════════════════════════════════════════════
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -65,6 +69,13 @@ class PlanResponse(BaseModel):
     itinerary: Optional[str] = None
     final_response: Optional[str] = None
     approved: Optional[str] = None
+    # Typed fields for direct frontend rendering
+    travelers_count: Optional[int] = None
+    duration_days: Optional[int] = None
+    estimated_total_inr: Optional[int] = None
+    transit_options: Optional[List[Dict[str, Any]]] = None
+    selected_hotel: Optional[Dict[str, Any]] = None
+    selected_transit: Optional[Dict[str, Any]] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -141,6 +152,12 @@ def build_initial_state(user_query: str) -> Dict[str, Any]:
         "hotel_results": "",
         "weather_results": "",
         "budget_results": "",
+        "travelers_count": 2,
+        "duration_days": 2,
+        "estimated_total_inr": 0,
+        "transit_options": [],
+        "selected_hotel": None,
+        "selected_transit": None,
         "itinerary": "",
         "human_feedback": "",
         "approved": "pending",
@@ -209,7 +226,14 @@ async def start_plan(req: PlanRequest):
                 weather_results=state_values.get("weather_results"),
                 budget_results=state_values.get("budget_results"),
                 itinerary=state_values.get("itinerary"),
+                final_response=state_values.get("final_response"),
                 approved="pending",
+                travelers_count=state_values.get("travelers_count"),
+                duration_days=state_values.get("duration_days"),
+                estimated_total_inr=state_values.get("estimated_total_inr"),
+                transit_options=state_values.get("transit_options"),
+                selected_hotel=state_values.get("selected_hotel"),
+                selected_transit=state_values.get("selected_transit"),
             )
 
         # Completed
@@ -219,7 +243,19 @@ async def start_plan(req: PlanRequest):
             final_response=state_values.get("final_response", ""),
             itinerary=state_values.get("itinerary"),
             budget_results=state_values.get("budget_results"),
+            trip_constraints=state_values.get("trip_constraints"),
+            flight_results=state_values.get("flight_results"),
+            rails_results=state_values.get("rails_results"),
+            bus_results=state_values.get("bus_results"),
+            hotel_results=state_values.get("hotel_results"),
+            weather_results=state_values.get("weather_results"),
             approved=state_values.get("approved", "approved"),
+            travelers_count=state_values.get("travelers_count"),
+            duration_days=state_values.get("duration_days"),
+            estimated_total_inr=state_values.get("estimated_total_inr"),
+            transit_options=state_values.get("transit_options"),
+            selected_hotel=state_values.get("selected_hotel"),
+            selected_transit=state_values.get("selected_transit"),
         )
 
     except Exception as exc:
@@ -262,8 +298,20 @@ async def approve_plan(thread_id: str, req: ApprovalRequest):
                 approval_request=interrupt_payload.get("approval_request"),
                 itinerary=state_values.get("itinerary"),
                 budget_results=state_values.get("budget_results"),
+                trip_constraints=state_values.get("trip_constraints"),
+                flight_results=state_values.get("flight_results"),
+                rails_results=state_values.get("rails_results"),
+                bus_results=state_values.get("bus_results"),
+                hotel_results=state_values.get("hotel_results"),
+                weather_results=state_values.get("weather_results"),
                 approved="pending",
                 message="Revised plan ready for review",
+                travelers_count=state_values.get("travelers_count"),
+                duration_days=state_values.get("duration_days"),
+                estimated_total_inr=state_values.get("estimated_total_inr"),
+                transit_options=state_values.get("transit_options"),
+                selected_hotel=state_values.get("selected_hotel"),
+                selected_transit=state_values.get("selected_transit"),
             )
 
         return PlanResponse(
@@ -272,12 +320,19 @@ async def approve_plan(thread_id: str, req: ApprovalRequest):
             final_response=state_values.get("final_response", ""),
             itinerary=state_values.get("itinerary"),
             budget_results=state_values.get("budget_results"),
+            trip_constraints=state_values.get("trip_constraints"),
             hotel_results=state_values.get("hotel_results"),
             flight_results=state_values.get("flight_results"),
             rails_results=state_values.get("rails_results"),
             bus_results=state_values.get("bus_results"),
             weather_results=state_values.get("weather_results"),
             approved=state_values.get("approved", "approved"),
+            travelers_count=state_values.get("travelers_count"),
+            duration_days=state_values.get("duration_days"),
+            estimated_total_inr=state_values.get("estimated_total_inr"),
+            transit_options=state_values.get("transit_options"),
+            selected_hotel=state_values.get("selected_hotel"),
+            selected_transit=state_values.get("selected_transit"),
         )
 
     except Exception as exc:
@@ -326,10 +381,20 @@ async def plan_status(thread_id: str):
             approval_request=(interrupt_payload or {}).get("approval_request"),
             itinerary=state_values.get("itinerary"),
             budget_results=state_values.get("budget_results"),
+            trip_constraints=state_values.get("trip_constraints"),
             flight_results=state_values.get("flight_results"),
+            rails_results=state_values.get("rails_results"),
+            bus_results=state_values.get("bus_results"),
             hotel_results=state_values.get("hotel_results"),
+            weather_results=state_values.get("weather_results"),
             final_response=state_values.get("final_response"),
             approved=state_values.get("approved", "pending"),
+            travelers_count=state_values.get("travelers_count"),
+            duration_days=state_values.get("duration_days"),
+            estimated_total_inr=state_values.get("estimated_total_inr"),
+            transit_options=state_values.get("transit_options"),
+            selected_hotel=state_values.get("selected_hotel"),
+            selected_transit=state_values.get("selected_transit"),
         )
 
     except HTTPException:

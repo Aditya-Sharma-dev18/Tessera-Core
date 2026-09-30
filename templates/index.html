@@ -22,7 +22,7 @@
         <a href="#agents">Agents</a>
         <a href="#mcp">FastMCP Tools</a>
       </div>
-      <button class="nav-cta" id="liveStatusBtn">Status: Ready</button>
+      <button class="nav-cta" id="liveStatusBtn">● Engine: Connecting...</button>
     </nav>
   </header>
 
@@ -50,9 +50,10 @@
 
       <div class="suggestion-pills">
         <span class="pill-label">Try:</span>
-        <button class="sample-query" data-query="Plan a 5-day trip from Delhi to Goa for 2 people from 20 November 2026 to 24 November 2026 with flights, beach resorts, and complete day-wise itinerary under 45000">Delhi → Goa (5 Days)</button>
-        <button class="sample-query" data-query="Plan a 5-day trip from Delhi to Manali for 4 people from 10 December 2026 to 14 December 2026 with flights, hotels, and complete day-wise itinerary under 40000">Delhi → Manali (5 Days)</button>
-        <button class="sample-query" data-query="Plan a 4-day trip from Mumbai to Dubai for 2 people from 5 January 2027 to 8 January 2027 with flights, luxury hotels, and complete day-wise itinerary under 150000">Mumbai → Dubai (4 Days)</button>
+        <button class="sample-query" data-query="Plan a 5-day trip from Delhi to Goa for 2 people from 20 November 2026 to 24 November 2026 with flights, beach resorts, and complete day-wise itinerary under 45000">Delhi → Goa (5 Days, Flight)</button>
+        <button class="sample-query" data-query="Plan a 3-day trip from Delhi to Agra for 2 people by train with luxury hotels and complete day-wise itinerary">Delhi → Agra (By Train, Luxury)</button>
+        <button class="sample-query" data-query="Plan a 1-day trip from Delhi to Agra for 2 people by train same day return without hotel stay">Delhi → Agra (1-Day Trip, No Stay)</button>
+        <button class="sample-query" data-query="Plan a 5-day trip from Delhi to Manali for 4 people by bus under 30000">Delhi → Manali (By Bus)</button>
       </div>
     </section>
 
@@ -111,15 +112,62 @@
         <div id="itineraryDaysList" class="itinerary-grid"></div>
       </div>
 
+      <!-- Executive Final Concierge Card (shown upon approval) -->
+      <div id="finalConciergeCard" class="sub-card full-width hidden" style="border: 1px solid #10b981; background: rgba(16, 185, 129, 0.03);">
+        <div class="card-head">
+          <h3 style="color: #065f46;">✦ Executive Concierge Dossier</h3>
+          <span class="badge-tag" style="background: #10b981; color: #fff;">Approved & Locked</span>
+        </div>
+        <div id="finalConciergeContent" class="md-body" style="padding: 10px 0;"></div>
+      </div>
+
       <div class="hitl-card">
         <div>
           <h4>Human-in-the-Loop Review</h4>
-          <p>Review the generated plan. Approve or pass revisions back to supervisor.</p>
+          <p>Review the generated plan. Approve to finalize, modify with instructions, or cancel.</p>
         </div>
         <div class="hitl-actions">
+          <button class="secondary-btn" id="cancelPlanBtn" style="color: #dc2626; border-color: #fecaca;">Cancel Trip</button>
           <button class="secondary-btn" id="rejectBtn">Modify Plan</button>
           <button class="primary-btn" id="approveBtn">Approve & Book</button>
         </div>
+      </div>
+    </section>
+
+    <!-- Architecture & Features Section -->
+    <section id="how-it-works" class="info-section" style="margin-top: 60px; padding: 24px; background: rgba(255, 255, 255, 0.7); border: 1px solid var(--surface-border); border-radius: var(--radius-card);">
+      <h3 style="font-size: 18px; margin-bottom: 8px;">Architecture: Stateful Cyclic Multi-Agent Runtime</h3>
+      <p style="color: var(--text-secondary); font-size: 13.5px; line-height: 1.6;">
+        Tessera Core coordinates autonomous agents using <strong>LangGraph</strong> backed by an asynchronous <strong>Neon PostgreSQL checkpointer</strong>. Trips transition from Safety Guardrails to Supervisor extraction, followed by parallel specialist tools and Human-In-The-Loop review.
+      </p>
+
+      <div id="agents" style="margin-top: 24px;">
+        <h4 style="font-size: 15px; margin-bottom: 10px;">Specialized Agent Network</h4>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; font-size: 13px;">
+          <div style="padding: 12px; background: #fff; border-radius: 8px; border: 1px solid var(--surface-border);">
+            <strong>🛡️ Guardrail Agent</strong>
+            <p style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">Validates travel domain intent and safety bounds.</p>
+          </div>
+          <div style="padding: 12px; background: #fff; border-radius: 8px; border: 1px solid var(--surface-border);">
+            <strong>🎯 Supervisor Agent</strong>
+            <p style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">Extracts origins, destinations, transit mode, and stay preferences.</p>
+          </div>
+          <div style="padding: 12px; background: #fff; border-radius: 8px; border: 1px solid var(--surface-border);">
+            <strong>💰 Budget & Economic Engine</strong>
+            <p style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">Calculates realistic local costs, living expenses, and transit fares.</p>
+          </div>
+          <div style="padding: 12px; background: #fff; border-radius: 8px; border: 1px solid var(--surface-border);">
+            <strong>🗺️ Itinerary Architect</strong>
+            <p style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">Synthesizes grounded day-wise plans with zero geographic hallucination.</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="mcp" style="margin-top: 24px;">
+        <h4 style="font-size: 15px; margin-bottom: 10px;">FastMCP Tool Integrations</h4>
+        <p style="color: var(--text-secondary); font-size: 13px;">
+          Process-isolated tools for real-time retrieval across <strong>Google Flights</strong>, <strong>Indian Railways (ConfirmTkt / IRCTC)</strong>, <strong>RedBus intercity transport</strong>, <strong>Tavily hotel tariffs</strong>, and <strong>Open-Meteo forecasts</strong>.
+        </p>
       </div>
     </section>
   </main>

@@ -1,9 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════════════
-#  🚌  BUS SEARCH TOOL — Tavily + LLM (manual JSON parse, no tool calling)
+#  🚌  BUS SEARCH TOOL — Robust Structured Pydantic Extraction
 # ═══════════════════════════════════════════════════════════════════════════
 import os
+import re
 import json
 from typing import List, Optional
+from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
 from tavily import TavilyClient
@@ -14,40 +16,61 @@ from utils.deep_links import DeepLinkGenerator
 load_dotenv()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  🚌  search_buses — Tavily + LLM extraction with manual JSON parsing
-# ═══════════════════════════════════════════════════════════════════════════
+class RawBus(BaseModel):
+    operator_name: str = Field(description="Name of the bus operator or state transport corporation")
+    bus_type: Optional[str] = Field(default="Intercity Bus", description="Type of bus: AC Sleeper, Volvo, Seater, etc.")
+    departure_time: Optional[str] = Field(default=None, description="Departure time e.g. 21:00 or Frequent Service")
+    duration_hours: Optional[str] = Field(default=None, description="Total journey time e.g. 5h 30m")
+    estimated_price_inr: Optional[float] = Field(default=None, description="Per person one-way fare in INR")
+
+
+class BusSearchModel(BaseModel):
+    buses: List[RawBus] = Field(default_factory=list, description="List of authentic buses found")
+
+
+def _to_num(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        cleaned = re.sub(r"[^\d.]", "", str(value))
+        val = float(cleaned) if cleaned else None
+        return val if (val is not None and val > 0) else None
+    except (ValueError, TypeError):
+        return None
+
+
 @tool
 def search_buses(origin_city: str, destination_city: str, travel_date: str) -> str:
     """
-    Search intercity bus schedules, operators, and ticket fare estimates across India.
-
-    Args:
-        origin_city: Departure city name (e.g., 'Delhi', 'Bangalore', 'Mumbai').
-        destination_city: Arrival city name (e.g., 'Manali', 'Hyderabad', 'Pune').
-        travel_date: Date of travel in YYYY-MM-DD format.
-
-    Returns:
-        JSON string with bus operators, bus types, estimated prices, and booking links.
+    Search authentic intercity bus options strictly from live search results.
+    Never invents fake fares, fake durations, or fake operators.
     """
     tavily_key = os.getenv("TAVILY_API_KEY")
     groq_key = os.getenv("GROQ_API_KEY")
-
-    if not tavily_key or not groq_key:
-        return json.dumps({"error": "TAVILY_API_KEY or GROQ_API_KEY missing"})
 
     from_city = origin_city.strip().title()
     to_city = destination_city.strip().title()
     deep_link = DeepLinkGenerator.get_bus_link(from_city, to_city, travel_date)
 
-    raw_text = ""
+    if not tavily_key or not groq_key:
+        return json.dumps({
+            "origin": from_city,
+            "destination": to_city,
+            "travel_date": travel_date,
+            "total_found": 0,
+            "recommended_buses": [],
+            "booking_url": deep_link,
+            "error": "API keys missing"
+        })
 
     try:
-        # ─── Step 1: Tavily search ───
         tavily = TavilyClient(api_key=tavily_key)
-        query = f"bus tickets fare from {from_city} to {to_city} price Zingbus IntrCity Redbus timetable"
+        query = f"{from_city} to {to_city} bus ticket fare timetable state transport roadways redbus"
         search_res = tavily.search(query=query, search_depth="basic", max_results=3)
-        context_snippets = "\n".join([r.get("content", "") for r in search_res.get("results", [])])
+
+        context_snippets = "\n".join(
+            [(r.get("content") or "") for r in search_res.get("results", [])]
+        )
 
         if not context_snippets.strip():
             return json.dumps({
@@ -55,126 +78,68 @@ def search_buses(origin_city: str, destination_city: str, travel_date: str) -> s
                 "destination": to_city,
                 "travel_date": travel_date,
                 "total_found": 0,
-                "cheapest_inr": None,
                 "recommended_buses": [],
-                "message": "No bus transit options found for this route.",
                 "booking_url": deep_link
             })
 
-        # ─── Step 2: LLM extracts JSON (manual parse) ───
         llm = ChatGroq(
-            model="openai/gpt-oss-20b",
+            model="openai/gpt-oss-120b",
             api_key=groq_key,
-            temperature=0,
-            max_tokens=2048,
+            temperature=0.0,
+            max_tokens=1024,
         )
 
-        extraction_prompt = f"""You are a bus data extractor. Extract intercity bus options between {from_city} and {to_city}.
+        extraction_prompt = f"""You are a strict data extraction parser. Extract verified bus details between {from_city} and {to_city} from the search snippets.
 
-SEARCH RESULTS:
-{context_snippets[:3500]}
+SEARCH SNIPPETS:
+{context_snippets[:3000]}
 
-RULES:
-1. Extract bus OPERATOR NAMES (e.g., "Zingbus", "IntrCity SmartBus", "SRS Travels", "VRL")
-2. Extract BUS TYPE (e.g., "AC Sleeper 2+1", "Multi-Axle Volvo", "Non-AC Seater")
-3. Extract DEPARTURE TIME (HH:MM format, estimate if needed)
-4. Extract DURATION (e.g., "8h 30m")
-5. Extract PRICE in INR (numeric, e.g., 1200)
-   - Look for "₹1,200", "Rs 1,500", "1200/-"
-   - If multiple prices, use the LOWEST
-   - If no price found → estimate ₹1,200 for short, ₹2,000 for medium, ₹2,500 for long routes
-6. NEVER return 0 price — always estimate
+STRICT EXTRACTION RULES:
+1. OPERATORS: Extract real operator names explicitly mentioned in the text (e.g. State Roadways / private operators).
+2. TIMINGS & DURATION: Extract departure time and duration ONLY if stated. Otherwise leave None.
+3. PRICING: Extract numeric fare in INR ONLY if stated. Do not guess.
+"""
+        structured_llm = llm.with_structured_output(BusSearchModel)
+        parsed_result: BusSearchModel = structured_llm.invoke([
+            {"role": "system", "content": "Extract verified bus schedules from search snippets."},
+            {"role": "user", "content": extraction_prompt}
+        ])
 
-OUTPUT — respond ONLY with valid JSON, no markdown:
-
-{{
-  "buses": [
-    {{
-      "operator_name": "Zingbus",
-      "bus_type": "AC Sleeper 2+1",
-      "departure_time": "20:30",
-      "duration_hours": "11h 15m",
-      "estimated_price_inr": 1200
-    }}
-  ]
-}}
-
-Extract UP TO 5 buses. Return {{"buses": []}} if truly none found.
-
-JSON RESPONSE:"""
-
-        response = llm.invoke(extraction_prompt)
-        raw_text = response.content.strip()
-
-        # Clean markdown fences
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-            raw_text = raw_text.strip()
-
-        # Extract JSON block
-        json_start = raw_text.find("{")
-        json_end = raw_text.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            raw_text = raw_text[json_start:json_end]
-
-        parsed = json.loads(raw_text)
-        raw_buses = parsed.get("buses", [])
-
-        # ─── Step 3: Normalize ───
         buses = []
-        for b in raw_buses[:5]:
+        seen = set()
+        for b in parsed_result.buses:
+            op = (b.operator_name or "").strip()
+            if not op or op.lower() in seen:
+                continue
+            seen.add(op.lower())
+
+            price = _to_num(b.estimated_price_inr)
             buses.append({
-                "operator_name": b.get("operator_name") or "Bus Operator",
-                "bus_type": b.get("bus_type") or "AC Seater",
-                "departure_time": b.get("departure_time") or "N/A",
-                "duration_hours": b.get("duration_hours") or "N/A",
-                "estimated_price_inr": float(b.get("estimated_price_inr") or 1200),
+                "operator_name": op,
+                "bus_type": b.bus_type or "Intercity Bus",
+                "departure_time": str(b.departure_time) if b.departure_time else "Frequent Service",
+                "duration_hours": str(b.duration_hours) if b.duration_hours else None,
+                "estimated_price_inr": price,
+                "price_is_estimate": price is None,
                 "booking_url": deep_link,
             })
-
-        prices = [b["estimated_price_inr"] for b in buses]
 
         return json.dumps({
             "origin": from_city,
             "destination": to_city,
             "travel_date": travel_date,
             "total_found": len(buses),
-            "cheapest_inr": min(prices) if prices else None,
-            "recommended_buses": buses,
-        }, indent=2)
+            "recommended_buses": buses[:3],
+            "booking_url": deep_link,
+        }, indent=2, ensure_ascii=False)
 
-    except json.JSONDecodeError as e:
-        print(f"⚠️ Bus JSON parse failed: {e}")
-        print(f"Raw LLM output: {raw_text[:500]}")
-        return json.dumps({
-            "origin": from_city,
-            "destination": to_city,
-            "travel_date": travel_date,
-            "error": f"JSON parse failed: {str(e)}",
-            "fallback_booking_url": deep_link
-        })
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         return json.dumps({
             "origin": from_city,
             "destination": to_city,
             "travel_date": travel_date,
-            "error": f"Bus search adapter error: {str(e)}",
-            "fallback_booking_url": deep_link
-        })
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  🧪  Test
-# ═══════════════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
-    print("Testing Bus Search Tool directly (Delhi -> Manali)...")
-    res = search_buses.invoke({
-        "origin_city": "Delhi",
-        "destination_city": "Manali",
-        "travel_date": "2026-12-15"
-    })
-    print(res)
+            "total_found": 0,
+            "recommended_buses": [],
+            "error": str(e),
+            "booking_url": deep_link
+        }, ensure_ascii=False)

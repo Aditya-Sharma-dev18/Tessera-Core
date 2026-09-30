@@ -7,6 +7,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let currentThreadId = null;
 
+  // Check backend engine health
+  fetch("/health")
+    .then(r => r.json())
+    .then(h => {
+      const btn = document.getElementById("liveStatusBtn");
+      if (btn) {
+        if (h.status === "ok") {
+          btn.textContent = "● Engine: Active";
+          btn.style.color = "#10b981";
+          btn.style.borderColor = "#a7f3d0";
+        }
+      }
+    })
+    .catch(() => {
+      const btn = document.getElementById("liveStatusBtn");
+      if (btn) btn.textContent = "○ Engine: Ready";
+    });
+
   document.querySelectorAll(".sample-query").forEach(btn => {
     btn.addEventListener("click", () => {
       queryInput.value = btn.getAttribute("data-query");
@@ -83,10 +101,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       console.log("Approve response:", data);
       if (data.status === "completed") {
-        alert("✅ Plan approved! Booking links ready.");
+        pipelineStatus.textContent = "🎉 Trip approved & finalized!";
+        alert("✅ Plan approved! Booking links locked and concierge dossier ready.");
         renderResults(data);
       } else if (data.status === "awaiting_approval") {
-        alert("Plan still awaiting review.");
+        pipelineStatus.textContent = "Plan ready for final confirmation";
         renderResults(data);
       }
     } catch (e) {
@@ -97,7 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ─── MODIFY ───
   document.getElementById("rejectBtn").addEventListener("click", async () => {
     if (!currentThreadId) return alert("No active plan");
-    const feedback = prompt("What changes should the agents make?\n(e.g., 'Make it cheaper')");
+    const feedback = prompt("What modifications should the travel architect make?\n(e.g., 'Make it cheaper', 'Include more temples', 'Change hotel')");
     if (!feedback) return;
 
     try {
@@ -124,6 +143,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // ─── CANCEL ───
+  const cancelBtn = document.getElementById("cancelPlanBtn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", async () => {
+      if (!currentThreadId) return alert("No active plan");
+      if (!confirm("Are you sure you want to cancel this travel plan?")) return;
+
+      try {
+        const res = await fetch(`/api/plan/${currentThreadId}/reject`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision: "reject", feedback: "User cancelled" })
+        });
+        const data = await res.json();
+        pipelineStatus.textContent = "❌ Travel plan creation cancelled.";
+        alert("Plan creation cancelled.");
+      } catch (e) {
+        alert(`Cancel failed: ${e.message}`);
+      }
+    });
+  }
+
   // ─── HELPERS ───
   function resetSteps() {
     ["step-guardrail", "step-supervisor", "step-specialists", "step-synthesizer"]
@@ -146,49 +187,85 @@ document.addEventListener("DOMContentLoaded", () => {
     const itineraryText = data.itinerary || data.final_response || "";
     document.getElementById("itineraryDaysList").innerHTML = renderMarkdownAsDays(itineraryText);
 
+    // 1. TRANSIT OPTIONS (Direct structured array ko priority di gayi hai)
     const transitContainer = document.getElementById("transitOptionsList");
-    const transitHtml = combineTransit(data.flight_results, data.rails_results, data.bus_results);
+    let transitHtml = "";
+    if (Array.isArray(data.transit_options) && data.transit_options.length > 0) {
+      transitHtml = renderStructuredTransit(data.transit_options);
+    } else {
+      transitHtml = combineTransit(data.flight_results, data.rails_results, data.bus_results);
+    }
     transitContainer.innerHTML = transitHtml
       || `<p style="color:#8189a8;font-size:13px;">No transit data available.</p>`;
 
-    // ⚠️ Update transit badge dynamically
     updateTransitBadge(data);
 
+    // 2. CURATED HOTELS (Selected hotel highlight ke saath)
     const hotelContainer = document.getElementById("hotelOptionsList");
-    hotelContainer.innerHTML = renderHotels(data.hotel_results)
+    hotelContainer.innerHTML = renderHotels(data.hotel_results, data.selected_hotel)
       || `<p style="color:#8189a8;font-size:13px;">No hotel data available.</p>`;
 
+    // 3. ESTIMATED TOTAL (Direct numeric field first — No regex trap!)
     const costEl = document.getElementById("resTotalCost");
-    if (costEl && data.budget_results) {
-      costEl.textContent = extractFirstINR(data.budget_results) || "—";
+    if (costEl) {
+      if (typeof data.estimated_total_inr === "number" && data.estimated_total_inr > 0) {
+        costEl.textContent = `₹${data.estimated_total_inr.toLocaleString()}`;
+      } else if (data.budget_results) {
+        costEl.textContent = extractAccurateTotal(data.budget_results) || "—";
+      } else {
+        costEl.textContent = "—";
+      }
     }
 
+    // 4. DESTINATION & ORIGIN
     const destEl = document.getElementById("resDestination");
-    if (destEl && data.trip_constraints) {
-      try {
-        const c = typeof data.trip_constraints === "string"
-          ? JSON.parse(data.trip_constraints) : data.trip_constraints;
-        const from = c.origin || c.from || "Origin";
-        const to = c.destination || c.to || "Destination";
-        destEl.textContent = `${from} to ${to}`;
-      } catch {}
+    if (destEl) {
+      let from = "Origin";
+      let to = "Destination";
+      if (data.trip_constraints) {
+        try {
+          const c = typeof data.trip_constraints === "string"
+            ? JSON.parse(data.trip_constraints) : data.trip_constraints;
+          from = c.origin || c.from || from;
+          to = c.destination || c.to || to;
+        } catch {}
+      }
+      destEl.textContent = `${from} to ${to}`;
     }
 
-    if (data.trip_constraints) {
-      try {
-        const c = typeof data.trip_constraints === "string"
-          ? JSON.parse(data.trip_constraints) : data.trip_constraints;
-        const days = c.duration_days || c.days || c.duration || "?";
-        const travelers = c.travelers || c.people || c.passengers || "?";
-        const durEl = document.getElementById("resDuration");
-        if (durEl) durEl.textContent = `${days} Days • ${travelers} Travelers`;
-      } catch (e) {
-        console.warn("Could not parse trip_constraints:", e);
+    // 5. DURATION & TRAVELERS (Root state fields first)
+    const durEl = document.getElementById("resDuration");
+    if (durEl) {
+      let days = data.duration_days;
+      let travelers = data.travelers_count;
+
+      if (!days || !travelers) {
+        try {
+          const c = typeof data.trip_constraints === "string"
+            ? JSON.parse(data.trip_constraints) : (data.trip_constraints || {});
+          days = days || c.duration_days || c.days || 2;
+          travelers = travelers || c.travelers || c.people || 2;
+        } catch {
+          days = days || 2;
+          travelers = travelers || 2;
+        }
+      }
+      durEl.textContent = `${days} Days • ${travelers} Travelers`;
+    }
+
+    // 6. EXECUTIVE CONCIERGE DOSSIER (Rendered when completed)
+    const dossierCard = document.getElementById("finalConciergeCard");
+    const dossierContent = document.getElementById("finalConciergeContent");
+    if (dossierCard && dossierContent) {
+      if (data.final_response && (data.status === "completed" || data.approved === "approved")) {
+        dossierContent.innerHTML = markdownToHtml(data.final_response);
+        dossierCard.classList.remove("hidden");
+      } else {
+        dossierCard.classList.add("hidden");
       }
     }
   }
 
-  // ⚠️ NEW: Update transit type badge
   function updateTransitBadge(data) {
     const badge = document.getElementById("transitTypeBadge");
     if (!badge) return;
@@ -196,43 +273,61 @@ document.addEventListener("DOMContentLoaded", () => {
     if (parseTransit(data.flight_results, "recommended_flights").length) types.push("Flights");
     if (parseTransit(data.rails_results, "trains").length) types.push("Trains");
     if (parseTransit(data.bus_results, "recommended_buses").length) types.push("Buses");
+    if (!types.length && Array.isArray(data.transit_options) && data.transit_options.length) {
+      types.push(data.transit_options[0].mode || "Transit");
+    }
     badge.textContent = types.length ? types.join(" + ") : "—";
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  COMBINE TRANSIT
+  //  STRUCTURED TRANSIT RENDERER
   // ═══════════════════════════════════════════════════════════════
+  function renderStructuredTransit(options) {
+    return options.map(item => {
+      const mode = (item.mode || "Transit").toLowerCase();
+      const icon = mode.includes("flight") ? "✈️" : mode.includes("train") ? "🚆" : "🚌";
+      const name = item.operator || item.name || "Transit Service";
+      const price = item.price_per_seat || item.price || 0;
+      const url = item.booking_url || "#";
+      const lastMileDesc = item.last_mile_details ? ` • + Last-mile (${item.last_mile_details.mode || 'Local'})` : "";
+
+      return `
+        <div class="item-card">
+          <div class="item-info">
+            <h5>${icon} ${name}</h5>
+            <p>${item.mode || "Express"}${lastMileDesc}</p>
+          </div>
+          <div class="item-right">
+            <span class="item-price">₹${Number(price).toLocaleString()}</span>
+            <a href="${url}" target="_blank" class="book-link">Book →</a>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
   function combineTransit(flightsRaw, railsRaw, busesRaw) {
     const items = [];
-    const allRaws = [flightsRaw, railsRaw, busesRaw];
-
     const tryParse = (raw) => {
       if (!raw) return null;
-      try {
-        return typeof raw === "string" ? JSON.parse(raw) : raw;
-      } catch { return null; }
+      try { return typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
     };
 
-    for (const raw of allRaws) {
+    [flightsRaw, railsRaw, busesRaw].forEach(raw => {
       const data = tryParse(raw);
-      if (!data) continue;
-
-      const flights = data.recommended_flights || data.flights;
-      if (Array.isArray(flights)) flights.forEach(f => items.push({ type: "flight", ...f }));
-
-      const trains = data.trains;
-      if (Array.isArray(trains)) trains.forEach(t => items.push({ type: "train", ...t }));
-
-      const buses = data.recommended_buses || data.buses;
-      if (Array.isArray(buses)) buses.forEach(b => items.push({ type: "bus", ...b }));
-    }
+      if (!data) return;
+      if (Array.isArray(data.recommended_flights)) data.recommended_flights.forEach(f => items.push({ type: "flight", ...f }));
+      if (Array.isArray(data.trains)) data.trains.forEach(t => items.push({ type: "train", ...t }));
+      if (Array.isArray(data.recommended_buses)) data.recommended_buses.forEach(b => items.push({ type: "bus", ...b }));
+    });
 
     const seen = new Set();
-    const unique = [];
-    for (const item of items) {
-      const key = `${item.airline || item.train_name || item.operator_name}|${item.departure_time}|${item.price_inr || item.estimated_price_inr}`;
-      if (!seen.has(key)) { seen.add(key); unique.push(item); }
-    }
+    const unique = items.filter(item => {
+      const key = `${item.airline || item.train_name || item.operator_name}|${item.departure_time}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
     if (!unique.length) return "";
 
@@ -243,11 +338,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const duration = item.flight_type || item.travel_time_hours || item.duration_hours || "";
       const price = item.price_inr || item.estimated_price_inr || 0;
 
-      // ⚠️ Compute arrival if missing
       let arr = item.arrival_time || "";
-      if (!arr && duration && dep !== "—") {
-        arr = computeArrival(dep, duration);
-      }
+      if (!arr && duration && dep !== "—") arr = computeArrival(dep, duration);
       if (!arr) arr = "—";
 
       return `
@@ -265,24 +357,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }).join("");
   }
 
-  // ⚠️ NEW: Compute arrival time from departure + duration
   function computeArrival(depTime, durationStr) {
     try {
       const [dh, dm] = depTime.split(":").map(Number);
       if (isNaN(dh) || isNaN(dm)) return "";
-
       const hMatch = String(durationStr).match(/(\d+)\s*h/i);
       const mMatch = String(durationStr).match(/(\d+)\s*m/i);
       const totalMin = (parseInt(hMatch?.[1] || 0) * 60) + parseInt(mMatch?.[1] || 0);
       if (totalMin <= 0) return "";
-
-      let arrMin = dh * 60 + dm + totalMin;
-      const dayOffset = Math.floor(arrMin / 1440);
-      arrMin = arrMin % 1440;
+      let arrMin = (dh * 60 + dm + totalMin) % 1440;
       const arrH = Math.floor(arrMin / 60);
       const arrM = arrMin % 60;
-      const suffix = dayOffset > 0 ? ` (+${dayOffset}d)` : "";
-      return `${String(arrH).padStart(2, "0")}:${String(arrM).padStart(2, "0")}${suffix}`;
+      return `${String(arrH).padStart(2, "0")}:${String(arrM).padStart(2, "0")}`;
     } catch {
       return "";
     }
@@ -294,41 +380,51 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = typeof rawJson === "string" ? JSON.parse(rawJson) : rawJson;
       const items = data[key] || data.results || [];
       return Array.isArray(items) ? items : [];
-    } catch {
-      return [];
-    }
+    } catch { return []; }
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  HOTELS
+  //  HOTELS RENDERER (With Selected Stay Highlight)
   // ═══════════════════════════════════════════════════════════════
-  function renderHotels(rawJson) {
+  function renderHotels(rawJson, selectedHotel) {
+    if (selectedHotel && selectedHotel.price === 0) {
+      return `
+        <div class="item-card selected-card" style="border: 1px solid #10b981; background: rgba(16, 185, 129, 0.04);">
+          <div class="item-info">
+            <h5>☀️ Day Trip (Same-Day Return)</h5>
+            <p>No overnight stay required in ${selectedHotel.location || 'destination'}. Full-day exploration plan.</p>
+          </div>
+          <div class="item-right">
+            <span class="item-price" style="color: #10b981; font-weight: 600;">₹0 Stay Cost</span>
+          </div>
+        </div>
+      `;
+    }
     if (!rawJson) return "";
     try {
       const data = typeof rawJson === "string" ? JSON.parse(rawJson) : rawJson;
       const hotels = data.hotels || data.results || [];
       if (!hotels.length) return "";
 
+      const selectedName = selectedHotel?.name?.toLowerCase().trim() || "";
+
       return hotels.slice(0, 4).map(h => {
         const name = h.name || h.title || "Hotel";
+        const isSelected = selectedName && name.toLowerCase().includes(selectedName);
         const rating = h.rating || "";
         const price = h.price_per_night || 0;
-        const amenities = h.amenities || h.snippet || h.content || "";
         const location = h.location || "";
         const url = h.url || h.booking_url || "#";
 
-        let subtitle = "";
-        if (rating && location) subtitle = `${rating} • ${location}`;
-        else if (rating) subtitle = rating;
-        else if (location) subtitle = location;
-        else subtitle = String(amenities).slice(0, 110);
+        let subtitle = rating && location ? `${rating} • ${location}` : (rating || location || "Verified Stay");
+        if (isSelected) subtitle = `⭐ Primary Pick • ${subtitle}`;
 
         const priceHtml = price > 0
           ? `<span class="item-price">₹${Number(price).toLocaleString()}<span style="font-size:10px;color:#9597a0;">/night</span></span>`
           : `<span class="item-price" style="font-size:11px;color:#9597a0;">Check price</span>`;
 
         return `
-          <div class="item-card">
+          <div class="item-card ${isSelected ? 'selected-card' : ''}" style="${isSelected ? 'border: 1px solid #4f46e5; background: rgba(79, 70, 229, 0.04);' : ''}">
             <div class="item-info">
               <h5>${name}</h5>
               <p>${subtitle}</p>
@@ -341,21 +437,20 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
       }).join("");
     } catch (e) {
-      console.warn("renderHotels parse failed:", e);
+      console.warn("renderHotels failed:", e);
       return "";
     }
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  ITINERARY — Markdown → HTML
+  //  ITINERARY & MARKDOWN
   // ═══════════════════════════════════════════════════════════════
   function renderMarkdownAsDays(md) {
     if (!md) return `<p style="color:#8189a8;">No itinerary generated.</p>`;
-
     const dayRegex = /(?:^|\n)\s*(?:#{1,4}\s*|\*\*\s*)?(?:DAY|Day)\s*0*(\d+)[\s—\-–:]+([^\n]*)\n([\s\S]*?)(?=(?:\n\s*(?:#{1,4}\s*|\*\*\s*)?(?:DAY|Day)\s*0*\d+)|$)/gi;
-
     const days = [];
     let match;
+
     while ((match = dayRegex.exec(md)) !== null) {
       days.push({
         num: match[1],
@@ -379,90 +474,88 @@ document.addEventListener("DOMContentLoaded", () => {
     </div>`;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  //  MINI MARKDOWN → HTML
-  // ═══════════════════════════════════════════════════════════════
-  function markdownToHtml(md) {
-    if (!md) return "";
+function markdownToHtml(md) {
+  if (!md) return "";
 
-    let html = escapeHtml(md);
+  // 1. Normalize line endings (\r\n -> \n)
+  let text = String(md).replace(/\r\n/g, "\n").trim();
+  text = escapeHtml(text);
 
-    html = html.replace(/^###\s+(.+)$/gm, '<h4 class="md-h">$1</h4>');
-    html = html.replace(/^##\s+(.+)$/gm,  '<h4 class="md-h">$1</h4>');
-    html = html.replace(/^#\s+(.+)$/gm,   '<h4 class="md-h">$1</h4>');
+  // 2. Robust Markdown Table Parser
+  text = text.replace(
+    /(?:^|\n)(\|.+?\|\n\|(?:\s*[-:]+[-|\s:]*)\|\n(?:\|.+?\|\n?)+)(?=\n|$)/g,
+    (match, tableBlock) => {
+      const rows = tableBlock.trim().split("\n").map(r => r.trim()).filter(Boolean);
+      if (rows.length < 2) return match;
 
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      const parseRow = (rowStr) =>
+        rowStr
+          .replace(/^\||\|$/g, "")
+          .split("|")
+          .map(cell => cell.trim());
 
-    // Tables
-    html = html.replace(
-      /(^\|.+\|\s*$\n^\|[-:|\s]+\|\s*$\n(?:^\|.+\|\s*$\n?)+)/gm,
-      (tableBlock) => {
-        const lines = tableBlock.trim().split('\n').filter(l => l.trim());
-        if (lines.length < 2) return tableBlock;
-        const headers = lines[0].split('|').filter(c => c.trim()).map(c => c.trim());
-        const rows = lines.slice(2).map(row =>
-          row.split('|').filter(c => c.trim()).map(c => c.trim())
-        );
-        const headerHtml = headers.map(h =>
-          `<th style="text-align:left;padding:8px 10px;background:rgba(99,102,241,0.08);color:#4f46e5;font-weight:600;font-size:12px;border-bottom:1px solid rgba(99,102,241,0.15);">${h}</th>`
-        ).join("");
-        const rowsHtml = rows.map(row =>
-          `<tr>${row.map(cell =>
-            `<td style="padding:8px 10px;border-bottom:1px solid rgba(0,0,0,0.05);font-size:12.5px;color:#111215;">${cell}</td>`
-          ).join("")}</tr>`
-        ).join("");
-        return `<table style="width:100%;border-collapse:collapse;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid rgba(99,102,241,0.15);">
-          <thead><tr>${headerHtml}</tr></thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>`;
-      }
-    );
+      const headers = parseRow(rows[0]);
+      // rows[1] separator line hoti hai (|---|---|), usko chhod do
+      const bodyRows = rows.slice(2).map(parseRow);
 
-    html = html.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+      const thead = headers
+        .map(h => `<th style="padding:10px 12px;background:#f3f4f6;color:#374151;font-weight:600;font-size:12px;text-align:left;border-bottom:2px solid #e5e7eb;">${h}</th>`)
+        .join("");
 
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" class="md-link">$1</a>');
+      const tbody = bodyRows
+        .map(row => `
+          <tr style="border-bottom:1px solid #f3f4f6;">
+            ${row.map(cell => `<td style="padding:10px 12px;font-size:12.5px;color:#1f2937;">${cell}</td>`).join("")}
+          </tr>
+        `).join("");
 
-    html = html.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g,
-      '<a href="$1" target="_blank" class="md-link">$1</a>');
+      return `
+        <div style="overflow-x:auto;margin:14px 0;border:1px solid #e5e7eb;border-radius:8px;">
+          <table style="width:100%;border-collapse:collapse;background:#ffffff;">
+            <thead><tr>${thead}</tr></thead>
+            <tbody>${tbody}</tbody>
+          </table>
+        </div>
+      `;
+    }
+  );
 
-    html = html.replace(/^&gt;\s*(.+)$/gm, '<div class="md-tip">$1</div>');
+  // 3. Headings, bold, italic, links
+  text = text.replace(/^###\s+(.+)$/gm, '<h5 class="md-h" style="margin:12px 0 6px;font-weight:600;color:#111827;">$1</h5>');
+  text = text.replace(/^##\s+(.+)$/gm,  '<h4 class="md-h" style="margin:14px 0 8px;font-weight:700;color:#111827;">$1</h4>');
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="md-link" style="color:#4f46e5;text-decoration:underline;">$1</a>');
+  text = text.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
+  text = text.replace(/(<li>[\s\S]*?<\/li>\s*)+/g, m => `<ul style="margin:8px 0;padding-left:20px;">${m}</ul>`);
+  text = text.replace(/\n{2,}/g, '</p><p style="margin:8px 0;">');
+  text = text.replace(/(?<!<\/li>|<\/ul>|<\/h4>|<\/h5>|<\/div>|<\/p>)\n/g, '<br>');
 
-    html = html.replace(/^\s*---+\s*$/gm, '<hr class="md-hr">');
-
-    html = html.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>[\s\S]*?<\/li>\s*)+/g,
-      m => `<ul class="md-ul">${m}</ul>`);
-
-    html = html.replace(/\n{2,}/g, '</p><p>');
-    html = html.replace(/(?<!<\/li>|<\/ul>|<\/h4>|<\/div>|<\/p>|<\/table>)\n/g, '<br>');
-
-    return `<div class="md-body"><p>${html}</p></div>`;
-  }
+  return `<div class="md-body"><p style="margin:8px 0;">${text}</p></div>`;
+}
 
   function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  EXTRACT TOTAL
+  //  ACCURATE TOTAL EXTRACTION (Fixed Regex)
   // ═══════════════════════════════════════════════════════════════
-  function extractFirstINR(text) {
+  function extractAccurateTotal(text) {
     if (!text) return null;
     const str = String(text);
 
-    const totalMatch = str.match(/\*{0,2}TOTAL\*{0,2}\s*[:\-]?\s*\*{0,2}\s*₹\s*([\d,]+)/i);
-    if (totalMatch) return `₹${totalMatch[1]}`;
+    // Pehle strict line dhoondein: "TOTAL ESTIMATED EXPENSE: ₹..." ya "TOTAL: ₹..."
+    const explicitMatch = str.match(/TOTAL(?:\s+ESTIMATED\s+EXPENSE)?\s*[:\-]?\s*(?:\*\*)?₹\s*([\d,]+)/i);
+    if (explicitMatch) return `₹${explicitMatch[1]}`;
 
-    const altMatch = str.match(/(?:Grand|Estimated|Final|Overall)\s+Total[:\s]*₹?\s*([\d,]+)/i);
-    if (altMatch) return `₹${altMatch[1]}`;
+    // Table row match: "| Total | ₹... |"
+    const tableMatch = str.match(/\|\s*Total\s*\|\s*₹?\s*([\d,]+)/i);
+    if (tableMatch) return `₹${tableMatch[1]}`;
 
-    const allMatches = [...str.matchAll(/₹\s*([\d,]+)/g)];
-    if (allMatches.length === 0) return null;
+    const approxMatch = str.match(/Total\s*[≈=:]\s*₹?\s*([\d,]+)/i);
+    if (approxMatch) return `₹${approxMatch[1]}`;
 
-    return `₹${allMatches[allMatches.length - 1][1]}`;
+    return null;
   }
 });

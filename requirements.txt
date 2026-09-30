@@ -20,6 +20,7 @@ httpx>=0.28.0
 requests>=2.32.0
 
 # --- Multi-Modal Transit (Flights, Rail, Bus) & Geospatial ---
+fast_flights>=0.2.0
 amadeus>=11.0.0
 airportsdata>=20241001
 pycountry>=24.6.1
