@@ -1,6 +1,10 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  🏨  TAVILY HOTEL TOOL — Grounded Pydantic Extraction
-# ═══════════════════════════════════════════════════════════════════════════
+import sys
+if sys.platform == "win32":
+    import io
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import re
 import json
@@ -18,13 +22,13 @@ class RawHotel(BaseModel):
     name: str = Field(description="Exact hotel or homestay name (no aggregator headlines)")
     location: Optional[str] = Field(default=None, description="Neighborhood, landmark or town")
     rating: Optional[str] = Field(default="", description="Rating if mentioned e.g. 4.3★")
-    price_per_night: Optional[int] = Field(default=None, description="Per room per night price in INR")
+    price_per_night: Optional[float] = Field(default=None, description="Per room per night price in INR")
     amenities: Optional[str] = Field(default="Standard Room", description="Key amenities e.g. Wi-Fi, AC, Breakfast")
     url: Optional[str] = Field(default="", description="Direct booking or OTA URL from snippet")
 
 
 class HotelSearchModel(BaseModel):
-    hotels: List[RawHotel] = Field(default_factory=list, description="List of authentic hotels found")
+    hotels: List[RawHotel] = Field(default_factory=list, description="List of authentic hotels found (maximum 5)")
 
 
 def _to_num(value, default: float = 0.0) -> float:
@@ -61,7 +65,7 @@ def search_hotels(city: str, budget_tier: str = "moderate", base_rate: int = 250
 
     try:
         tavily = TavilyClient(api_key=tavily_key)
-        res = tavily.search(query=query, search_depth="advanced", max_results=8)
+        res = tavily.search(query=query, search_depth="advanced", max_results=6)
 
         context_parts = []
         for r in res.get("results", []):
@@ -76,33 +80,27 @@ def search_hotels(city: str, budget_tier: str = "moderate", base_rate: int = 250
             return json.dumps({"city": city, "hotels": [], "error": "No verified search results found"}, ensure_ascii=False)
 
         llm = ChatGroq(
-            model="openai/gpt-oss-120b",
+            model="openai/gpt-oss-20b",
             api_key=groq_key,
             temperature=0.0,
-            max_tokens=2048,
+            max_tokens=4096,
         )
 
-        extraction_prompt = f"""You are a strict Hotel Data Extractor. Extract REAL accommodation options (hotels, resorts, guest houses, homestays) from the search snippets for '{city}' tailored to '{tier}' tier.
+        extraction_prompt = f"""You are a strict Hotel Data Extractor. Extract up to 5 REAL accommodation options (hotels, resorts, guest houses, homestays) from the search snippets for '{city}' tailored to '{tier}' tier.
 
 SEARCH SNIPPETS:
-{context[:4000]}
+{context[:3500]}
 
 STRICT RULES:
-1. ACTUAL PROPERTY NAMES ONLY: Reject aggregator listicle titles like 'Top 10 Hotels in...', 'Booking.com', 'Tripadvisor'. Clean out trailing aggregator suffixes like '| MakeMyTrip'.
-2. Extract numeric tariff in INR if found. Otherwise leave None.
+1. MAXIMUM 5 PROPERTIES: Extract up to 5 properties only. Do not exceed 5.
+2. ACTUAL PROPERTY NAMES ONLY: Reject aggregator listicle titles like 'Top 10 Hotels in...', 'Booking.com', 'Tripadvisor'. Clean out trailing aggregator suffixes like '| MakeMyTrip'.
+3. Extract numeric tariff in INR if found. Otherwise leave None.
 """
-        try:
-            structured_llm = llm.with_structured_output(HotelSearchModel, method="json_mode")
-            parsed: HotelSearchModel = structured_llm.invoke([
-                {"role": "system", "content": "Extract genuine hotel and resort properties from search context as JSON matching the schema."},
-                {"role": "user", "content": extraction_prompt}
-            ])
-        except Exception:
-            structured_llm = llm.with_structured_output(HotelSearchModel)
-            parsed: HotelSearchModel = structured_llm.invoke([
-                {"role": "system", "content": "Extract genuine hotel properties from search context."},
-                {"role": "user", "content": extraction_prompt}
-            ])
+        structured_llm = llm.with_structured_output(HotelSearchModel)
+        parsed: HotelSearchModel = structured_llm.invoke([
+            {"role": "system", "content": "Extract genuine hotel properties from search context."},
+            {"role": "user", "content": extraction_prompt}
+        ])
 
         aggregator_keywords = [
             "top 10", "top 20", "best hotels in", "10 best", "11 best", "18 best",
@@ -121,9 +119,18 @@ STRICT RULES:
                 continue
             seen.add(name.lower())
 
-            price = h.price_per_night or default_price
+            raw_price = h.price_per_night
+            if raw_price is not None and raw_price > 0:
+                # If snippet reported price in USD (e.g. $179), convert to INR
+                if raw_price < 500 and (raw_price * 85) >= 1200:
+                    price = raw_price * 85.0
+                else:
+                    price = float(raw_price)
+            else:
+                price = float(default_price)
+
             if price <= 0:
-                price = default_price
+                price = float(default_price)
 
             hotels.append({
                 "name": name,
@@ -134,7 +141,7 @@ STRICT RULES:
                 "amenities": h.amenities or "Standard Room",
                 "url": h.url or f"https://www.google.com/travel/hotels/{city}",
                 "title": name,
-                "snippet": f"{h.location or city} • ₹{price}/night"
+                "snippet": f"{h.location or city} • ₹{int(price)}/night"
             })
 
         return json.dumps({

@@ -1,6 +1,10 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  🚌  BUS SEARCH TOOL — Robust Structured Pydantic Extraction
-# ═══════════════════════════════════════════════════════════════════════════
+import sys
+if sys.platform == "win32":
+    import io
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import re
 import json
@@ -83,19 +87,19 @@ def search_buses(origin_city: str, destination_city: str, travel_date: str) -> s
             })
 
         llm = ChatGroq(
-            model="openai/gpt-oss-120b",
+            model="openai/gpt-oss-20b",
             api_key=groq_key,
             temperature=0.0,
-            max_tokens=1024,
+            max_tokens=3072,
         )
 
-        extraction_prompt = f"""You are a strict data extraction parser. Extract verified bus details between {from_city} and {to_city} from the search snippets.
+        extraction_prompt = f"""You are a strict data extraction parser. Extract up to 4 verified bus details between {from_city} and {to_city} from the search snippets.
 
 SEARCH SNIPPETS:
 {context_snippets[:3000]}
 
 STRICT EXTRACTION RULES:
-1. OPERATORS: Extract real operator names explicitly mentioned in the text (e.g. State Roadways / private operators).
+1. OPERATORS: Extract up to 4 real operator names explicitly mentioned in the text (e.g. State Roadways / private operators).
 2. TIMINGS & DURATION: Extract departure time and duration ONLY if stated. Otherwise leave None.
 3. PRICING: Extract numeric fare in INR ONLY if stated. Do not guess.
 """

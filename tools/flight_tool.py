@@ -1,3 +1,10 @@
+import sys
+if sys.platform == "win32":
+    import io
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
 import json
 from typing import List, Optional
 from langchain_core.tools import tool

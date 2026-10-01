@@ -72,9 +72,11 @@ def get_database_url() -> str:
 guardrails_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0.0)
 supervisor_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0.0)
 budget_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0.0)
-itinerary_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2)
 final_agent_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0.0)
-parsing_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.0)
+parsing_model = ChatGroq(model="openai/gpt-oss-20b", temperature=0.0)
+
+# Added max_retries=5 to handle API 429 limits gracefully
+itinerary_model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, max_retries=5)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -93,6 +95,7 @@ class TravelState(TypedDict):
     guardrail_reason: str
     user_query: str
     trip_constraints: dict[str, Any]
+    resolved_geo: Dict[str, Any]  # Centralized geography state
     selected_agents: list[str]
     supervisor_reasoning: str
 
@@ -122,7 +125,7 @@ class TravelState(TypedDict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  🛠️  HELPERS & PARSERS
+#  🛠️️  HELPERS & PARSERS
 # ═══════════════════════════════════════════════════════════════════════════
 _DATE_FORMATS = ("%Y-%m-%d", "%d-%m-%Y", "%d %b %Y", "%d %B %Y", "%Y/%m/%d")
 
@@ -259,13 +262,13 @@ def _has_results(raw, list_key: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════
 class UniversalGeoResolution(BaseModel):
     origin_display: str = Field(default="Origin", description="Exact clean origin location name")
-    origin_transit_city: str = Field(default="Origin", description="Nearest major interstate transit city/hub for origin")
+    origin_transit_city: str = Field(default="Origin", description="Single clean city or transit hub name for origin (e.g. 'Delhi', 'Mumbai')")
     origin_iata: Optional[str] = Field(None, description="Actual airport IATA code if one realistically exists")
     origin_rail_code: Optional[str] = Field(None, description="Actual IRCTC railway station code if in India and exists")
 
     destination_display: str = Field(default="Destination", description="Exact clean destination location name")
-    destination_stay_town: str = Field(default="Destination", description="Actual settlement/town where hotels/guest houses exist")
-    destination_transit_hub: str = Field(default="Destination", description="Primary transit gateway where long-distance buses/trains/flights arrive")
+    destination_stay_town: str = Field(default="Destination", description="Settlement/town where hotels/guest houses exist")
+    destination_transit_hub: str = Field(default="Destination", description="Single clean city or gateway hub name where long-distance transit arrives (e.g. 'Goa', 'Rishikesh', 'Chandigarh', 'Dehradun')")
     destination_iata: Optional[str] = Field(None, description="Actual airport IATA code if destination is accessible by air")
     destination_rail_code: Optional[str] = Field(None, description="Actual IRCTC railway station code if accessible by train")
 
@@ -365,20 +368,22 @@ Analyze the given origin and destination pair. Calculate physical realities, acc
 {grounding_block}
 CRITICAL INSTRUCTIONS (STRICT ZERO-HALLUCINATION POLICY):
 1. FACTUAL GROUNDING: Base all geographic and logistics attributes strictly on physical reality. If web context is provided above, trust it over any generic assumptions.
-2. DISTINGUISH TRANSIT GATEWAY HUB VS STAY BASE:
-   - For mountain shrines, hill treks, national parks, or remote destinations (e.g. Kartik Swami Temple, Kedarnath, Chopta, Valley of Flowers, Spiti, Leh, Jibhi):
-     * `destination_transit_hub`: Major transit city where long-distance trains, flights, or intercity express buses arrive (e.g., Rishikesh, Haridwar, Dehradun, Kathgodam, Chandigarh, Kalka).
-     * `destination_stay_town`: The ACTUAL settlement/village/town closest to the destination where hotels/homestays exist (e.g., Kanakchauri or Rudraprayag for Kartik Swami; Chopta/Sari for Tungnath; Kaza for Spiti). DO NOT keep travelers staying at the gateway city (e.g. Rishikesh) if the attraction is 100-200 km deep into the mountains!
-     * `is_remote`: Set to True.
-     * `terrain_type`: "hills" or "mountains".
-     * `last_mile_mode`: Authentic regional mountain transport (e.g. "Mountain Shared Jeep / Private Taxi from transit hub, followed by ridge trail trek").
-     * `last_mile_duration`: Realistic mountain driving and trekking time (e.g. "5–6h mountain drive + 2h trek").
-     * `route_advice`: Specify real mountain highway routes (e.g., NH 7 / NH 58 via Devprayag, Srinagar, Rudraprayag to Kanakchauri) and real altitude/weather precautions.
-3. If in India:
-   - Provide real IRCTC codes if available (e.g., New Delhi -> 'NDLS', Haridwar -> 'HW', Rishikesh -> 'RKSH', Lucknow -> 'LKO', Hardoi -> 'HRI').
-   - For short plains distances (<150 km), primary transit must be train or regional bus (1-2 hours).
-4. Physical Realism:
-   - Accurately describe the destination's geography in `geographic_features`. Declare whether the destination is landlocked, agricultural plains, coastal, or high mountain. If landlocked (e.g. Hardoi), state clearly that no rivers flow through the main town so the itinerary never invents one.
+
+2. INTERNATIONAL & BORDER RULES (CRITICAL): If origin and destination are in different countries (`is_international` = True):
+   - For Western/High-Cost countries (Europe, USA, Middle East, Japan, Australia): Scale `typical_budget_stay_price_per_night_inr` to ₹8,000-₹15,000+ and `typical_one_way_transit_fare_inr` to ₹30,000-₹80,000+. `recommended_primary_transit` MUST be 'flight'.
+   - For Budget/Neighbouring Asian countries (Nepal, Bhutan, Sri Lanka, Thailand, Vietnam): Scale pricing accurately to regional realities (e.g., ₹1,500-₹4,000 per night). 
+   - If the countries share a drivable/train border (e.g., India to Nepal/Bhutan/Bangladesh), you MAY allow 'bus' or 'train' if logistically accurate.
+
+3. OVERSEAS & ISLAND RULE: If the destination is an island separated by an ocean (e.g., Havelock, Maldives), `recommended_primary_transit` MUST be 'flight' or 'ship'. EXCEPTION: If the island is connected to the mainland by a motorable road/rail bridge (e.g., Rameswaram), trains/buses are allowed.
+
+4. DISTINGUISH TRANSIT GATEWAY HUB VS STAY BASE:
+   - `destination_transit_hub`: Major transit city where flights/trains arrive.
+   - `destination_stay_town`: The ACTUAL settlement/village/town.
+   - For remote mountains: Set `is_remote` to True, `terrain_type` to "hills" or "mountains", and specify authentic `last_mile_mode`.
+
+5. If in India:
+   - Provide real IRCTC codes if available. For short plains distances (<150 km), primary transit must be train or regional bus.
+   - Describe geography accurately (plains, landlocked, coastal, etc.).
 """
     user_prompt = f'Resolve logistics for Trip Origin: "{origin}" to Destination: "{destination}"'
 
@@ -506,8 +511,16 @@ class GuardrailsValidation(BaseModel):
 
 def guardrails_node(state: TravelState) -> dict:
     query = state.get("user_query", "").strip()
+    
+    # Updated System Prompt: Strict domain/safety check, ignore logistical impossibility
     system_prompt = """You are an Input Guardrail agent for the Tessera Travel Engine.
-Evaluate the incoming query for travel relevance and safety. Return structured output."""
+Evaluate the incoming query STRICTLY for safety and travel domain relevance. Return structured output.
+
+CRITICAL INSTRUCTIONS:
+1. ALLOW any query related to travel, tourism, transit, or vacations.
+2. DO NOT evaluate geographic feasibility or transit reality. If a user asks for something impossible (e.g., "train to a high mountain", "drive across the ocean"), you MUST ALLOW IT. Downstream agents will correct their logistical mistakes.
+3. REJECT ONLY if the query violates safety policies (violence, illegal acts) or is entirely unrelated to travel (e.g., coding help, math equations).
+"""
 
     try:
         struct_guard = guardrails_model.with_structured_output(GuardrailsValidation)
@@ -569,8 +582,8 @@ def supervisor_agent(state: TravelState) -> dict:
     system_prompt = f"""You are the Supervisor Agent of the Tessera Travel Engine.
 Today's reference date is {today}.
 Analyze the user's travel request and extract the parameters dynamically.
-NEVER default to hardcoded cities. Extract the origin and destination strictly from what the user typed.
-If origin is omitted, deduce it from natural language context or label as 'Local Area'.
+NEVER default to hardcoded cities if an origin is stated. Extract the origin and destination strictly from what the user typed.
+If origin is omitted or unknown, assume 'Delhi' as default reference departure origin for domestic Indian travel (or deduce logically from context).
 If the query explicitly asks for a 1-day trip, same-day return, or day tour, set duration_days = 1.
 If duration is unspecified, estimate logically from the scope of travel (default 2 days for single-city trips).
 If travelers count is unspecified, assume 2 travelers.
@@ -612,9 +625,16 @@ If user mentions stay preference ('luxury', '5-star', 'resort', 'budget', 'hoste
             "raw_query": query
         }
 
+    # Resolve geography ONCE here before parallel branching to prevent API rate limit crashes
+    geo_res = resolve_locations_dynamically(
+        str(constraints.get("origin", "Delhi")), 
+        str(constraints.get("destination", query))
+    )
+
     return {
         "selected_agents": KNOWN_AGENTS,
         "trip_constraints": constraints,
+        "resolved_geo": geo_res.model_dump(),
         "supervisor_reasoning": reasoning,
         "travelers_count": int(constraints["travelers"]),
         "duration_days": int(constraints["duration_days"]),
@@ -628,12 +648,11 @@ If user mentions stay preference ('luxury', '5-star', 'resort', 'budget', 'hoste
 def flight_agent(state: TravelState) -> dict:
     """Dynamically routes across Flight, Train, and Bus tools based on user preference and real geography."""
     c = _safe_constraints(state)
-    origin_raw = c.get("origin", "")
-    dest_raw = c.get("destination", "")
     date = _resolve_travel_date(c)
     pref_mode = (c.get("preferred_transit_mode") or "any").lower()
 
-    geo = resolve_locations_dynamically(str(origin_raw), str(dest_raw))
+    # Read geography directly from state (No extra LLM call)
+    geo = UniversalGeoResolution(**state.get("resolved_geo", {}))
     origin_transit = geo.origin_transit_city
     dest_hub = geo.destination_transit_hub
 
@@ -642,8 +661,7 @@ def flight_agent(state: TravelState) -> dict:
             geo.origin_iata
             and geo.destination_iata
             and geo.origin_iata != geo.destination_iata
-            and not geo.is_remote
-            and (geo.is_international or geo.estimated_distance_km > 150)
+            and (geo.is_international or geo.estimated_distance_km > 150 or pref_mode == "flight")
         )
         if can_fly:
             try:
@@ -676,30 +694,47 @@ def flight_agent(state: TravelState) -> dict:
 
     def try_buses():
         if not geo.is_international:
+            # 1. First try direct buses to destination city
+            target_dest = geo.destination_display
             try:
                 res = search_buses.invoke({
                     "origin_city": origin_transit,
-                    "destination_city": dest_hub,
+                    "destination_city": target_dest,
                     "travel_date": date
                 })
                 rs = str(res)
                 bus_json = _load_json(rs)
                 if bus_json and _has_results(rs, "recommended_buses"):
-                    if geo.is_remote:
-                        bus_json = {
-                            "last_mile_commute": {
-                                "transit_hub": dest_hub,
-                                "stay_town": geo.destination_stay_town,
-                                "mode": geo.last_mile_mode,
-                                "duration": geo.last_mile_duration,
-                                "estimated_fare_inr": geo.last_mile_cost_inr,
-                                "advice": geo.route_advice
-                            },
-                            **bus_json
-                        }
-                    return {"flight_results": "", "rails_results": "", "bus_results": json.dumps(bus_json, ensure_ascii=False)}
+                    return {"flight_results": "", "rails_results": "", "bus_results": rs}
             except Exception as e:
-                print(f"[Warning] Bus tool execution: {e}")
+                print(f"[Warning] Direct bus tool execution: {e}")
+
+            # 2. If direct buses not found and destination has a regional transit hub, search hub with last-mile
+            if dest_hub and dest_hub.lower() != target_dest.lower():
+                try:
+                    res = search_buses.invoke({
+                        "origin_city": origin_transit,
+                        "destination_city": dest_hub,
+                        "travel_date": date
+                    })
+                    rs = str(res)
+                    bus_json = _load_json(rs)
+                    if bus_json and _has_results(rs, "recommended_buses"):
+                        if geo.is_remote:
+                            bus_json = {
+                                "last_mile_commute": {
+                                    "transit_hub": dest_hub,
+                                    "stay_town": geo.destination_stay_town,
+                                    "mode": geo.last_mile_mode,
+                                    "duration": geo.last_mile_duration,
+                                    "estimated_fare_inr": geo.last_mile_cost_inr,
+                                    "advice": geo.route_advice
+                                },
+                                **bus_json
+                            }
+                        return {"flight_results": "", "rails_results": "", "bus_results": json.dumps(bus_json, ensure_ascii=False)}
+                except Exception as e:
+                    print(f"[Warning] Hub bus tool execution: {e}")
         return None
 
     # 1. User Explicit Transit Mode Priority
@@ -751,7 +786,7 @@ def flight_agent(state: TravelState) -> dict:
 
 def hotel_agent(state: TravelState) -> dict:
     c = _safe_constraints(state)
-    geo = resolve_locations_dynamically(str(c.get("origin", "")), str(c.get("destination", "")))
+    geo = UniversalGeoResolution(**state.get("resolved_geo", {}))
     stay_tier = (c.get("stay_tier") or "").lower()
     budget_raw = c.get("budget")
 
@@ -780,8 +815,7 @@ def hotel_agent(state: TravelState) -> dict:
 
 
 def weather_agent(state: TravelState) -> dict:
-    c = _safe_constraints(state)
-    geo = resolve_locations_dynamically(str(c.get("origin", "")), str(c.get("destination", "")))
+    geo = UniversalGeoResolution(**state.get("resolved_geo", {}))
     try:
         results = get_weather.invoke({"city": geo.destination_stay_town})
     except Exception as e:
@@ -796,10 +830,7 @@ def weather_agent(state: TravelState) -> dict:
 def budget_agent(state: TravelState) -> dict:
     """Computes realistic budget using verified tool prices or dynamic destination economics."""
     c = _safe_constraints(state)
-    origin_raw = str(c.get("origin", ""))
-    dest_raw = str(c.get("destination", ""))
-
-    geo = resolve_locations_dynamically(origin_raw, dest_raw)
+    geo = UniversalGeoResolution(**state.get("resolved_geo", {}))
 
     duration = max(1, int(state.get("duration_days") or c.get("duration_days") or 2))
     nights = max(0, duration - 1)
@@ -910,10 +941,23 @@ def budget_agent(state: TravelState) -> dict:
         "booking_url": booking_url
     }]
 
-    # 3. Dynamic Living Costs (from resolved geo intelligence)
-    food_cost = geo.typical_daily_food_cost_per_person_inr * duration * travelers
-    local_transport = geo.typical_daily_local_transit_inr * duration * travelers
-    activities_cost = geo.typical_activity_fee_inr * travelers
+    # 3. Dynamic Living Costs (scaled to stay tier and geo intelligence)
+    if stay_tier == "luxury":
+        food_unit = max(1400, int(geo.typical_daily_food_cost_per_person_inr * 2.0))
+        local_unit = max(1200, int(geo.typical_daily_local_transit_inr * 2.2))
+        activities_unit = max(500, int(geo.typical_activity_fee_inr * 2.0))
+    elif stay_tier == "budget":
+        food_unit = max(350, int(geo.typical_daily_food_cost_per_person_inr * 0.75))
+        local_unit = max(200, int(geo.typical_daily_local_transit_inr * 0.7))
+        activities_unit = max(150, int(geo.typical_activity_fee_inr * 0.75))
+    else:
+        food_unit = geo.typical_daily_food_cost_per_person_inr
+        local_unit = geo.typical_daily_local_transit_inr
+        activities_unit = geo.typical_activity_fee_inr
+
+    food_cost = food_unit * duration * travelers
+    local_transport = local_unit * duration * travelers
+    activities_cost = activities_unit * travelers
 
     total_expense = int(total_transit_cost + hotel_cost + food_cost + local_transport + activities_cost)
 
@@ -960,7 +1004,7 @@ def itinerary_agent(state: TravelState) -> dict:
     query = state.get("user_query", "")
     hotel = state.get("selected_hotel") or {"name": "Verified Stay", "price": 1000, "location": "City Center"}
     transit = state.get("selected_transit") or {"name": "Regular Transit", "price": 100}
-    geo = resolve_locations_dynamically(str(c.get("origin", "")), str(c.get("destination", "")))
+    geo = UniversalGeoResolution(**state.get("resolved_geo", {}))
 
     total_days = max(1, int(state.get("duration_days") or c.get("duration_days") or 2))
     destination = geo.destination_display
@@ -974,7 +1018,8 @@ def itinerary_agent(state: TravelState) -> dict:
     stay_instructions = (
         f"- For this 1-DAY TRIP, travelers do NOT stay overnight in {destination}. Schedule morning arrival and evening return transit back to {origin}."
         if is_day_trip else
-        f"- Travelers will stay overnight at: '{hotel_name}' in {stay_town} (Rate: ₹{hotel_price:,}/night)."
+        f"- For Days 1 to {max(1, total_days - 1):02d}: Travelers stay overnight at: '{hotel_name}' in {stay_town} (Rate: ₹{hotel_price:,}/night).\n"
+        f"   - For Day {total_days:02d} (Final Departure Day): Travelers return home to {origin}. On this final day, '* Stay:' MUST indicate: 'Return journey to {origin} (Home departure, no overnight hotel needed)'."
     )
 
     # Fetch real attractions to eliminate fictitious sightseeing
@@ -998,6 +1043,18 @@ def itinerary_agent(state: TravelState) -> dict:
    - ABSOLUTE ZERO HALLUCINATION: NEVER suggest auto-rickshaws, e-rickshaws, or scooters for cross-district mountain routes. NEVER claim travelers can take a 30-minute auto ride from a plains/foothills city to a high Himalayan peak 180 km away!
 """
 
+    stay_line_example = (
+        f"Same-day evening return to {origin} (No hotel required)"
+        if is_day_trip else
+        f"[For intermediate days: {stay_town} — {hotel_name} (₹{hotel_price:,}/night); For final Day {total_days:02d}: Return journey to {origin} (Home departure, no overnight hotel needed)]"
+    )
+
+    # 🟢 NEW LOGIC: Dynamic Payment Advice based on Geography 🟢
+    if geo.is_international:
+        payment_advice = "recommend multi-currency Forex cards, international credit cards, and carrying local currency (Euros/Dollars); NEVER mention UPI or INR."
+    else:
+        payment_advice = "recommend UPI [GPay/PhonePe] and cash in ₹100/₹500 for local street stalls; NEVER mention discontinued ₹2000 currency notes."
+
     prompt = f"""You are the Lead Itinerary Architect. Synthesize a strictly grounded day-by-day plan.
 
 ABSOLUTE HARD RULES (DO NOT DEVIATE):
@@ -1015,7 +1072,7 @@ ABSOLUTE HARD RULES (DO NOT DEVIATE):
      * Morning: [Detailed morning activity or travel leg]
      * Afternoon: [Afternoon sightseeing, meal spot, or key milestone]
      * Evening: [Sunset viewpoint, cultural activity, or dinner]
-     * Stay: {stay_town if not is_day_trip else "Same-day return to " + origin} — {"Same-day evening return to " + origin if is_day_trip else hotel_name + f" (₹{hotel_price:,}/night)"}
+     * Stay: {stay_line_example}
 
 3. GEOGRAPHIC & FACTUAL REALISM (ZERO TOLERANCE FOR HALLUCINATIONS):
    - Destination: {destination}. Physical features: {geo.geographic_features}.
@@ -1031,7 +1088,7 @@ ABSOLUTE HARD RULES (DO NOT DEVIATE):
 User Query: {query}
 Transit Details: {transit.get('name', 'Direct Transit')}
 
-End with "## Practical Tips" (weather, local transit, cash advice, altitude/clothing).
+End with "## Practical Tips" (weather, local transit, cash & payments advice: {payment_advice}, recommend official online monument ticketing, altitude/clothing).
 """
     response = itinerary_model.invoke(prompt)
     return {"itinerary": response.content, "messages": [response]}
@@ -1091,14 +1148,32 @@ def route_after_approval(state: TravelState) -> str:
 
 
 def revise_itinerary_node(state: TravelState) -> dict:
+    total_days = max(1, int(state.get("duration_days") or 2))
+    hotel = state.get('selected_hotel', {})
+    origin = state.get('trip_constraints', {}).get('origin', 'Origin')
+    hotel_name = hotel.get('name', 'Selected Hotel')
+    hotel_price = hotel.get('price', 1500)
+
+    # 🟢 NEW LOGIC: Dynamic Payment Advice for Revisions 🟢
+    geo_dict = state.get("resolved_geo", {})
+    is_international = geo_dict.get("is_international", False)
+
+    if is_international:
+        payment_advice = "recommend multi-currency Forex cards, international credit cards, and carrying local currency (Euros/Dollars); NEVER mention UPI or INR."
+    else:
+        payment_advice = "recommend UPI [GPay/PhonePe] and cash in ₹100/₹500 for local street stalls; NEVER mention discontinued ₹2000 currency notes."
+
     prompt = f"""You are the Itinerary Architect. Revise the itinerary based on user feedback:
 Feedback: "{state.get('human_feedback', '')}"
 Current Itinerary:
 {state.get('itinerary', '')}
 
-Maintain the locked stay: {state.get('selected_hotel', {}).get('name', 'Selected Hotel')}.
+Maintain the locked stay: {hotel_name}.
 STRICT FORMAT: Maintain the chronological days (DAY XX — [TITLE]) with '* Morning:', '* Afternoon:', '* Evening:', '* Stay:'.
-Do NOT output any markdown pipe tables (|---|). End with '## Practical Tips'.
+On intermediate days (Day 01 to Day {max(1, total_days - 1):02d}), '* Stay:' MUST indicate '{hotel_name} (₹{hotel_price:,}/night)'.
+On final Day {total_days:02d}, '* Stay:' MUST indicate 'Return journey to {origin} (Home departure, no overnight hotel needed)'.
+Do NOT output any markdown pipe tables (|---|).
+End with '## Practical Tips' (Payment advice: {payment_advice}, recommend official online monument ticketing).
 """
     response = itinerary_model.invoke(prompt)
     return {
